@@ -297,6 +297,21 @@ PRESENCE_SHOW_RECENT_EVENT = True
 PRESENCE_ALLOW_INSERT_TO_CHAT = True
 PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = 60
 
+# --- Desktop Presence Shell (0.2.2) --- поведение Electron-оболочки (tray
+# icon, сворачивание/закрытие в tray, авто-старт backend'а). Backend эти
+# значения только хранит/валидирует/отдаёт — читает их Electron main process
+# (electron/main.cjs) напрямую из storage/settings.json: minimize/close/
+# notifications перечитываются на каждое событие окна (применяются живьём),
+# enable_tray_icon и auto_start_backend_with_desktop читаются один раз при
+# старте Electron (нужен перезапуск приложения — честно задокументировано в
+# Settings UI). Автозапуск Windows НЕ добавлен — auto_start_backend_with_desktop
+# запускает только backend вместе с уже запущенным вручную desktop-приложением.
+ENABLE_TRAY_ICON = True
+MINIMIZE_TO_TRAY = True
+CLOSE_TO_TRAY = True
+SHOW_TRAY_NOTIFICATIONS = False
+AUTO_START_BACKEND_WITH_DESKTOP = False
+
 # --- Chat input ---
 CHAT_INPUT_MAX_CHARS = 4000  # обеспечивается и сервером (/api/chat), и UI-счётчиком
 

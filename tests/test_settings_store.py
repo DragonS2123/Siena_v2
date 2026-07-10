@@ -196,6 +196,12 @@ def test_persistable_fields_matches_expected_set():
         "presence_show_recent_event",
         "presence_allow_insert_to_chat",
         "presence_min_seconds_between_ui_messages",
+        # Desktop Presence Shell (0.2.2) — consumed by electron/main.cjs.
+        "enable_tray_icon",
+        "minimize_to_tray",
+        "close_to_tray",
+        "show_tray_notifications",
+        "auto_start_backend_with_desktop",
     }
 
 

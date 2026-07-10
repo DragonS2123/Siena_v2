@@ -12,7 +12,7 @@ import {
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson, Languages,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Waves, Headphones, Download,
-  Sparkles,
+  Sparkles, Monitor,
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
@@ -51,7 +51,7 @@ type MainView =
 type ModelState = "idle" | "thinking" | "generating" | "tool";
 type SettingsSection =
   | "appearance" | "model" | "startup" | "tools"
-  | "code" | "voice" | "language" | "presence" | "developer";
+  | "code" | "voice" | "language" | "presence" | "desktop" | "developer";
 type AttachmentType = "image" | "text" | "code" | "markdown" | "json" | "log";
 type VoiceState =
   | "idle" | "requesting-permission" | "listening" | "speaking-user" | "transcribing"
@@ -3536,6 +3536,7 @@ const SETTINGS_NAV: { id: SettingsSection; labelKey: string; icon: React.Element
   { id: "voice", labelKey: "settings.nav.voice", icon: Volume2 },
   { id: "language", labelKey: "settings.nav.language", icon: Globe },
   { id: "presence", labelKey: "settings.nav.presence", icon: Sparkles },
+  { id: "desktop", labelKey: "settings.nav.desktop", icon: Monitor },
   { id: "developer", labelKey: "settings.nav.developer", icon: Terminal },
 ];
 
@@ -3569,6 +3570,7 @@ function SettingsView() {
             {active === "voice" && <VoiceSettings />}
             {active === "language" && <LanguageSettings />}
             {active === "presence" && <PresenceSettings />}
+            {active === "desktop" && <DesktopSettings />}
             {active === "developer" && <DeveloperSettings />}
           </motion.div>
         </AnimatePresence>
@@ -4290,6 +4292,74 @@ function PresenceSettings() {
           onChange={(e) => { const v = Number(e.target.value); if (v >= 0) void persist({ presence_min_seconds_between_ui_messages: v }); }}
           className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
       </div>
+    </SettingsCard>
+  </>);
+}
+
+// Desktop Presence Shell (0.2.2) — tray/window behavior settings, consumed
+// by electron/main.cjs (it reads storage/settings.json directly, so saving
+// here IS the live contract). Nothing decorative: minimize/close/
+// notifications apply on the next window event; the two startup-time
+// settings honestly say they need a desktop-app restart.
+function DesktopSettings() {
+  const { settings, loading, saving, saveError, save } = useSettings();
+  const { status: desktopRuntimeStatus, error: runtimeError } = useRuntimeStatus();
+  const { t } = useUiPreferences();
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  const persist = async (patch: Partial<SettingsPayload>) => {
+    setSaveStatus(null);
+    const ok = await save(patch);
+    setSaveStatus(ok ? t("common.saved") : null);
+  };
+
+  if (!settings) {
+    return <div className="text-xs text-[#6b5f57]">{t("common.loading")}</div>;
+  }
+
+  const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
+  const backendOnline = desktopRuntimeStatus !== null && !runtimeError;
+
+  return (<>
+    <SectionHeader title={t("settings.desktop.title")} desc={t("settings.desktop.desc")} action={<Badge label={t("common.badge.persisted")} variant="ok" />} />
+    <SettingsCard title={t("settings.desktop.status")}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.shellActive")}</span>
+        <Badge label={isElectron ? t("settings.desktop.yes") : t("settings.desktop.browserMode")} variant={isElectron ? "ok" : "neutral"} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.backend")}</span>
+        <Badge label={backendOnline ? t("settings.desktop.online") : t("settings.desktop.offline")} variant={backendOnline ? "ok" : "error"} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.trayEnabled")}</span>
+        <Badge label={settings.enable_tray_icon ? t("settings.desktop.yes") : t("settings.desktop.no")} variant={settings.enable_tray_icon ? "ok" : "neutral"} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.closeToTrayStatus")}</span>
+        <Badge label={settings.close_to_tray ? t("settings.desktop.yes") : t("settings.desktop.no")} variant={settings.close_to_tray ? "ok" : "neutral"} />
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.desktop.tray")}>
+      <Toggle label={t("settings.desktop.enableTray")} sub={t("settings.desktop.enableTraySub")} badge={<Badge label={t("settings.desktop.restartNote")} variant="warn" />}
+        checked={settings.enable_tray_icon} disabled={loading || saving}
+        onChange={(v) => void persist({ enable_tray_icon: v })} />
+      <Toggle label={t("settings.desktop.minimizeToTray")} sub={t("settings.desktop.minimizeToTraySub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.minimize_to_tray} disabled={loading || saving}
+        onChange={(v) => void persist({ minimize_to_tray: v })} />
+      <Toggle label={t("settings.desktop.closeToTray")} sub={t("settings.desktop.closeToTraySub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.close_to_tray} disabled={loading || saving}
+        onChange={(v) => void persist({ close_to_tray: v })} />
+      <Toggle label={t("settings.desktop.trayNotifications")} sub={t("settings.desktop.trayNotificationsSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.show_tray_notifications} disabled={loading || saving}
+        onChange={(v) => void persist({ show_tray_notifications: v })} />
+      <SettingsSaveStatus saving={saving} saveError={saveError} saveStatus={saveStatus} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.desktop.backendLifecycle")}>
+      <Toggle label={t("settings.desktop.autoStartBackend")} sub={t("settings.desktop.autoStartBackendSub")} badge={<Badge label={t("settings.desktop.restartNote")} variant="warn" />}
+        checked={settings.auto_start_backend_with_desktop} disabled={loading || saving}
+        onChange={(v) => void persist({ auto_start_backend_with_desktop: v })} />
+      <div className="text-[10px] text-[#4b4540]">{t("settings.desktop.lifecycleNote")}</div>
     </SettingsCard>
   </>);
 }

@@ -263,6 +263,14 @@ class SettingsUpdate(BaseModel):
     presence_show_recent_event: bool | None = None
     presence_allow_insert_to_chat: bool | None = None
     presence_min_seconds_between_ui_messages: int | None = None
+    # Desktop Presence Shell (0.2.2) — Electron tray/window behavior. The
+    # backend only stores/validates/echoes these; the actual consumer is
+    # electron/main.cjs, which reads storage/settings.json directly.
+    enable_tray_icon: bool | None = None
+    minimize_to_tray: bool | None = None
+    close_to_tray: bool | None = None
+    show_tray_notifications: bool | None = None
+    auto_start_backend_with_desktop: bool | None = None
 
 
 class TraceHub:
@@ -531,6 +539,16 @@ if "presence_allow_insert_to_chat" in _persisted_settings:
     config.PRESENCE_ALLOW_INSERT_TO_CHAT = _persisted_settings["presence_allow_insert_to_chat"]
 if "presence_min_seconds_between_ui_messages" in _persisted_settings:
     config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = _persisted_settings["presence_min_seconds_between_ui_messages"]
+if "enable_tray_icon" in _persisted_settings:
+    config.ENABLE_TRAY_ICON = _persisted_settings["enable_tray_icon"]
+if "minimize_to_tray" in _persisted_settings:
+    config.MINIMIZE_TO_TRAY = _persisted_settings["minimize_to_tray"]
+if "close_to_tray" in _persisted_settings:
+    config.CLOSE_TO_TRAY = _persisted_settings["close_to_tray"]
+if "show_tray_notifications" in _persisted_settings:
+    config.SHOW_TRAY_NOTIFICATIONS = _persisted_settings["show_tray_notifications"]
+if "auto_start_backend_with_desktop" in _persisted_settings:
+    config.AUTO_START_BACKEND_WITH_DESKTOP = _persisted_settings["auto_start_backend_with_desktop"]
 
 base_logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL)
 if _settings_load_error:
@@ -904,6 +922,11 @@ def _settings_payload() -> dict[str, Any]:
         "presence_show_recent_event": config.PRESENCE_SHOW_RECENT_EVENT,
         "presence_allow_insert_to_chat": config.PRESENCE_ALLOW_INSERT_TO_CHAT,
         "presence_min_seconds_between_ui_messages": config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES,
+        "enable_tray_icon": config.ENABLE_TRAY_ICON,
+        "minimize_to_tray": config.MINIMIZE_TO_TRAY,
+        "close_to_tray": config.CLOSE_TO_TRAY,
+        "show_tray_notifications": config.SHOW_TRAY_NOTIFICATIONS,
+        "auto_start_backend_with_desktop": config.AUTO_START_BACKEND_WITH_DESKTOP,
     }
 
 
@@ -2281,6 +2304,16 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         config.PRESENCE_ALLOW_INSERT_TO_CHAT = changes["presence_allow_insert_to_chat"]
     if "presence_min_seconds_between_ui_messages" in changes:
         config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = changes["presence_min_seconds_between_ui_messages"]
+    if "enable_tray_icon" in changes:
+        config.ENABLE_TRAY_ICON = changes["enable_tray_icon"]
+    if "minimize_to_tray" in changes:
+        config.MINIMIZE_TO_TRAY = changes["minimize_to_tray"]
+    if "close_to_tray" in changes:
+        config.CLOSE_TO_TRAY = changes["close_to_tray"]
+    if "show_tray_notifications" in changes:
+        config.SHOW_TRAY_NOTIFICATIONS = changes["show_tray_notifications"]
+    if "auto_start_backend_with_desktop" in changes:
+        config.AUTO_START_BACKEND_WITH_DESKTOP = changes["auto_start_backend_with_desktop"]
 
     client_affecting = {"primary_model", "ollama_host", "request_timeout_seconds", "num_ctx", "num_predict"}
     if client_affecting & changes.keys():
@@ -2323,6 +2356,35 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
             await trace_hub.broadcast({"event": "settings_saved", "saved_fields": list(persistable_changes.keys())})
 
     return after
+
+
+# Desktop Presence Shell (0.2.2) — the app's one canonical version lives in
+# the frontend package.json (every visible APP_VERSION display reads it via
+# Vite's define); read the same file here rather than hand-maintaining a
+# second version constant that would inevitably drift.
+def _app_version() -> str:
+    try:
+        package_json = config.BASE_DIR / "Siena v2 Control Panel UI" / "package.json"
+        return str(json.loads(package_json.read_text(encoding="utf-8-sig")).get("version", "unknown"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+
+
+_APP_VERSION = _app_version()
+
+
+@app.get("/api/health")
+async def health() -> dict[str, Any]:
+    """Deliberately trivial liveness probe for the Electron tray's
+    online/offline indicator (electron/main.cjs polls this) — no Ollama
+    call, no model state, no disk access, so polling it can never wake or
+    slow anything down."""
+    return {
+        "ok": True,
+        "app": "Siena v2",
+        "version": _APP_VERSION,
+        "time": _now_iso(),
+    }
 
 
 @app.get("/api/runtime/status")

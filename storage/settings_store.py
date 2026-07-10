@@ -87,6 +87,14 @@ PERSISTABLE_FIELDS = (
     "presence_show_recent_event",
     "presence_allow_insert_to_chat",
     "presence_min_seconds_between_ui_messages",
+    # Desktop Presence Shell (0.2.2) — consumed by the Electron main process
+    # (electron/main.cjs reads storage/settings.json directly); the backend
+    # only stores/validates/echoes them.
+    "enable_tray_icon",
+    "minimize_to_tray",
+    "close_to_tray",
+    "show_tray_notifications",
+    "auto_start_backend_with_desktop",
 )
 
 

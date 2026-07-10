@@ -340,6 +340,15 @@ export interface SettingsPayload {
   presence_show_recent_event: boolean;
   presence_allow_insert_to_chat: boolean;
   presence_min_seconds_between_ui_messages: number;
+  // Desktop Presence Shell (0.2.2) — consumed by electron/main.cjs (reads
+  // storage/settings.json directly). minimize/close/notifications apply
+  // live; enable_tray_icon and auto_start_backend_with_desktop are read at
+  // Electron startup and need a desktop-app restart.
+  enable_tray_icon: boolean;
+  minimize_to_tray: boolean;
+  close_to_tray: boolean;
+  show_tray_notifications: boolean;
+  auto_start_backend_with_desktop: boolean;
 }
 
 // The latest UI-only presence event (welcome_back / say) shown in the
