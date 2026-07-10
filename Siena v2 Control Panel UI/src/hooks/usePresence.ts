@@ -16,6 +16,7 @@ interface UsePresenceResult {
   quiet: () => Promise<void>;
   wake: () => Promise<void>;
   say: () => Promise<{ message: string | null; throttled: boolean }>;
+  dismissEvent: () => Promise<void>;
 }
 
 /**
@@ -96,5 +97,14 @@ export function usePresence(): UsePresenceResult {
     }
   }, []);
 
-  return { status, loading, error, refresh, quiet, wake, say };
+  const dismissEvent = useCallback(async () => {
+    try {
+      const data = await sienaClient.dismissPresenceEvent();
+      setStatus(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to dismiss event");
+    }
+  }, []);
+
+  return { status, loading, error, refresh, quiet, wake, say, dismissEvent };
 }

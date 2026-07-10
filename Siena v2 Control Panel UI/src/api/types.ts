@@ -334,6 +334,24 @@ export interface SettingsPayload {
   presence_quiet_hours_end: string;
   presence_style: "calm" | "playful" | "minimal" | string;
   show_presence_card: boolean;
+  // Presence Behavior Layer (0.2.1, Phase 2) — welcome-back / recent-event /
+  // insert-to-composer gates, all real and persisted like Phase 1's fields.
+  presence_show_welcome_back: boolean;
+  presence_show_recent_event: boolean;
+  presence_allow_insert_to_chat: boolean;
+  presence_min_seconds_between_ui_messages: number;
+}
+
+// The latest UI-only presence event (welcome_back / say) shown in the
+// Presence Card's "Latest event" block. `message` is the backend's canonical
+// RU line; the frontend renders the localized text via the i18n key
+// presence.event.<type>.<style>.<variant>, falling back to `message`.
+export interface PresenceRecentEvent {
+  type: "welcome_back" | "say" | string;
+  style: "calm" | "playful" | "minimal" | string;
+  variant: number;
+  message: string;
+  created_at: string;
 }
 
 // GET /api/presence/status | POST /api/presence/{ping,quiet,wake} — all
@@ -352,6 +370,7 @@ export interface PresenceStatus {
   is_quiet_mode: boolean;
   uptime_seconds: number | null;
   current_activity: string | null;
+  recent_event: PresenceRecentEvent | null;
 }
 
 // POST /api/presence/say — deterministic, local, no-LLM status line (never
@@ -360,6 +379,7 @@ export interface PresenceSayResponse {
   message: string | null;
   throttled: boolean;
   style: string;
+  variant: number | null;
 }
 
 export interface CandidateMemoryEntry {

@@ -36,6 +36,10 @@ class PresenceState:
     quiet_until: str | None = None
     uptime_seconds: int | None = None
     current_activity: str | None = None
+    # Phase 2 — the latest UI-only presence event (welcome_back / say),
+    # shown in the Presence Card's "Latest event" block. Never a chat
+    # message; dismissible via POST /api/presence/event/dismiss.
+    recent_event: dict | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -48,4 +52,5 @@ class PresenceState:
             "is_quiet_mode": self.is_quiet_mode,
             "uptime_seconds": self.uptime_seconds,
             "current_activity": self.current_activity,
+            "recent_event": self.recent_event,
         }

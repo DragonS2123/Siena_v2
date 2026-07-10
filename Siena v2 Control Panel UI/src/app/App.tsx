@@ -1203,6 +1203,14 @@ function VoiceStateText({ state }: { state: VoiceState }) {
 
 const MAX_COMPOSER_H = 200;
 
+// Presence Phase 2 — window event the Presence Card's "To chat" button
+// dispatches and the Composer listens for. Deliberately a DOM event, not a
+// context/prop chain: the card lives in the Sidebar and the composer deep
+// inside ChatView, and this is the whole integration (insert text, nothing
+// else) — threading a setter through half the component tree for it would
+// be the bigger change.
+const PRESENCE_INSERT_EVENT = "siena:presence-insert-to-composer";
+
 function Composer({ onSend, thinking, speech, streaming, conversationId }: {
   onSend: (text: string, attachments: Attachment[]) => Promise<SendResult>; thinking: boolean;
   speech: UseSpeechResult; streaming: UseStreamingSpeechResult; conversationId: string | null;
@@ -1306,6 +1314,49 @@ function Composer({ onSend, thinking, speech, streaming, conversationId }: {
   const voiceActive = voiceState !== "idle";
   const isError = voiceState === "error-mic" || voiceState === "error-tts";
   const isSiena = voiceState === "speaking-siena" || voiceState === "fallback";
+
+  // Presence Behavior Layer (Phase 2) — reports the voice lifecycle the
+  // backend can't see on its own: raw mic recording (before any transcribe
+  // call) and actual audio playback (after synthesize returned). Primitives
+  // are destructured above/here rather than passing hook objects into the
+  // deps array (see the hook-identity-stability convention used across
+  // ChatView's effects). Posted only on change, fire-and-forget — presence
+  // is a soft indicator, never worth failing the voice UX over.
+  const speechState = speech.state;
+  const streamingStatus = streaming.status;
+  const recorderStatus = recorder.status;
+  const conversationState = conversation.state;
+  const presenceActivity: "listening" | "speaking" | "available" =
+    recorderStatus === "recording" ||
+    conversationState === "listening" || conversationState === "speech_detected" ||
+    conversationState === "silence_wait" || conversationState === "finalizing_wait"
+      ? "listening"
+      : speechState === "speaking" || streamingStatus === "streaming" || conversationState === "speaking"
+        ? "speaking"
+        : "available";
+  const lastReportedActivityRef = useRef<"listening" | "speaking" | "available">("available");
+  useEffect(() => {
+    if (lastReportedActivityRef.current === presenceActivity) return;
+    lastReportedActivityRef.current = presenceActivity;
+    void sienaClient.postPresenceActivity(presenceActivity);
+  }, [presenceActivity]);
+
+  // Presence Card's "To chat" (Phase 2) — inserts the event text into this
+  // composer. Insert ONLY: never calls onSend, never creates a message —
+  // the human still has to press Send themselves (No Chat Pollution rule).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (typeof text !== "string" || !text.trim()) return;
+      setValue(prev => {
+        if (!prev.trim()) return text;
+        return prev + (/\s$/.test(prev) ? "" : " ") + text;
+      });
+      textareaRef.current?.focus();
+    };
+    window.addEventListener(PRESENCE_INSERT_EVENT, handler);
+    return () => window.removeEventListener(PRESENCE_INSERT_EVENT, handler);
+  }, []);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -4223,6 +4274,23 @@ function PresenceSettings() {
         ))}
       </div>
     </SettingsCard>
+    <SettingsCard title={t("settings.presence.behavior")}>
+      <Toggle label={t("settings.presence.showWelcomeBack")} sub={t("settings.presence.showWelcomeBackSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.presence_show_welcome_back} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_show_welcome_back: v })} />
+      <Toggle label={t("settings.presence.showRecentEvent")} sub={t("settings.presence.showRecentEventSub")}
+        checked={settings.presence_show_recent_event} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_show_recent_event: v })} />
+      <Toggle label={t("settings.presence.allowInsertToChat")} sub={t("settings.presence.allowInsertToChatSub")}
+        checked={settings.presence_allow_insert_to_chat} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_allow_insert_to_chat: v })} />
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.minSecondsBetween")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.minSecondsBetweenSub")}</p></div>
+        <input type="number" min={0} value={settings.presence_min_seconds_between_ui_messages} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 0) void persist({ presence_min_seconds_between_ui_messages: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+    </SettingsCard>
   </>);
 }
 
@@ -4348,23 +4416,53 @@ const PRESENCE_DOT: Record<string, string> = {
   error: "bg-red-400",
 };
 
-function PresenceCard() {
+function PresenceCard({ setView }: { setView: (v: MainView) => void }) {
   const { settings } = useSettings();
-  const { status, quiet, wake, say } = usePresence();
+  const { status, quiet, wake, say, refresh, dismissEvent } = usePresence();
   const { t } = useUiPreferences();
-  const [sayText, setSayText] = useState<string | null>(null);
   const [saying, setSaying] = useState(false);
+  const [sayThrottled, setSayThrottled] = useState(false);
 
-  if (!settings?.enable_presence || !settings?.show_presence_card || !status) return null;
+  // Gated on the live settings AND the backend-derived state: the settings
+  // instance refreshes via SETTINGS_UPDATED_EVENT when the Settings screen
+  // saves, and the "offline" check catches enable_presence=false within one
+  // 5s status poll even if settings were changed outside this UI (Phase 1
+  // smoke found the card surviving both toggles on a stale snapshot).
+  if (!settings?.enable_presence || !settings?.show_presence_card || !status || status.state === "offline") {
+    return null;
+  }
 
   const isQuiet = status.state === "quiet";
-  const stateLabel = sayText ?? t(`presence.state.${status.state}`);
+  const style = settings.presence_style ?? "calm";
+
+  // Style-aware status line (Phase 2): try the styled key first, fall back
+  // to the base per-state line — only available/quiet have styled variants
+  // for now, matching the task's examples.
+  const styledKey = `presence.state.${status.state}.${style}`;
+  const styledLabel = t(styledKey);
+  const stateLabel = sayThrottled ? t("presence.say.throttled") : styledLabel !== styledKey ? styledLabel : t(`presence.state.${status.state}`);
+
+  const event = settings.presence_show_recent_event ? status.recent_event : null;
+  const eventKey = event ? `presence.event.${event.type}.${event.style}.${event.variant}` : null;
+  const eventText = event && eventKey ? (t(eventKey) !== eventKey ? t(eventKey) : event.message) : null;
 
   const handleSay = async () => {
     setSaying(true);
     const result = await say();
-    setSayText(result.throttled ? t("presence.say.throttled") : result.message);
+    setSayThrottled(result.throttled);
+    // The spoken line lands in status.recent_event server-side — refresh so
+    // the "Latest event" block shows it without waiting for the next poll.
+    await refresh();
     setSaying(false);
+  };
+
+  const handleInsertToChat = () => {
+    if (!eventText) return;
+    void sienaClient.logClientEvent("presence_insert_to_composer_requested", { event_type: event?.type });
+    setView("chat");
+    // Insert only — the Composer's listener appends to the input; nothing
+    // is ever sent automatically (No Chat Pollution rule).
+    window.dispatchEvent(new CustomEvent(PRESENCE_INSERT_EVENT, { detail: { text: eventText } }));
   };
 
   return (
@@ -4376,6 +4474,24 @@ function PresenceCard() {
           <span className={`ml-auto w-1.5 h-1.5 rounded-full shrink-0 ${PRESENCE_DOT[status.state] ?? "bg-[#3a342e]"}`} />
         </div>
         <div className="text-[10px] text-[#6b5f57] truncate">{stateLabel}</div>
+        {event && eventText && (
+          <div className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2 py-1.5 space-y-1">
+            <div className="text-[9px] uppercase tracking-[0.1em] text-[#3a342e] font-semibold">{t("presence.card.latestEvent")}</div>
+            <div className="text-[10px] text-[#a89f96] leading-snug">{eventText}</div>
+            <div className="flex gap-1.5">
+              <button onClick={() => void dismissEvent()}
+                className="px-1.5 py-0.5 rounded text-[9px] font-medium text-[#6b5f57] hover:text-[#c8c0b7] hover:bg-white/[0.04] transition-colors">
+                {t("presence.button.dismiss")}
+              </button>
+              {settings.presence_allow_insert_to_chat && (
+                <button onClick={handleInsertToChat}
+                  className="px-1.5 py-0.5 rounded text-[9px] font-medium text-[#c4644a] hover:bg-[#c4644a]/10 transition-colors">
+                  {t("presence.button.toChat")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="flex gap-1.5">
           {isQuiet ? (
             <button onClick={() => void wake()}
@@ -4462,7 +4578,7 @@ function Sidebar({ open, conversations, conversationsUnavailable, activeConversa
             </button>
           ))}
         </div>
-        <PresenceCard />
+        <PresenceCard setView={setView} />
         <ModelStatusWidget state={modelState} />
       </div>
     </motion.aside>

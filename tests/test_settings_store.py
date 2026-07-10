@@ -191,6 +191,11 @@ def test_persistable_fields_matches_expected_set():
         "presence_quiet_hours_end",
         "presence_style",
         "show_presence_card",
+        # Presence Behavior Layer (0.2.1, Phase 2).
+        "presence_show_welcome_back",
+        "presence_show_recent_event",
+        "presence_allow_insert_to_chat",
+        "presence_min_seconds_between_ui_messages",
     }
 
 

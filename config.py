@@ -286,6 +286,17 @@ PRESENCE_QUIET_HOURS_END = "08:00"
 PRESENCE_STYLE = "calm"  # "calm" | "playful" | "minimal" — see presence/presence_service.py's message pool
 SHOW_PRESENCE_CARD = True
 
+# --- Presence Behavior Layer (0.2.1, Phase 2) --- мягкое поведение поверх
+# Phase 1: welcome-back UI-событие после idle, блок «последнее событие» в
+# Presence Card, вставка текста в composer (никогда не авто-отправка).
+# Все события — детерминированные строки, без LLM, без TTS, и никогда не
+# пишутся в обычную историю чата (см. tests/test_presence_behavior.py,
+# правило No Chat Pollution).
+PRESENCE_SHOW_WELCOME_BACK = True
+PRESENCE_SHOW_RECENT_EVENT = True
+PRESENCE_ALLOW_INSERT_TO_CHAT = True
+PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = 60
+
 # --- Chat input ---
 CHAT_INPUT_MAX_CHARS = 4000  # обеспечивается и сервером (/api/chat), и UI-счётчиком
 

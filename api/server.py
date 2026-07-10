@@ -124,6 +124,11 @@ class PresenceQuietRequest(BaseModel):
     minutes: int | None = None
 
 
+class PresenceActivityRequest(BaseModel):
+    activity: str  # "listening" | "speaking" | "available" — validated in the handler
+    source: str = "frontend"
+
+
 class TranslateRequest(BaseModel):
     text: str
     source_lang: str = config.TRANSLATOR_DEFAULT_SOURCE
@@ -252,6 +257,12 @@ class SettingsUpdate(BaseModel):
     presence_quiet_hours_end: str | None = None
     presence_style: str | None = None
     show_presence_card: bool | None = None
+    # Presence Behavior Layer (Phase 2) — welcome-back / recent-event /
+    # insert-to-composer gates, all real and applied live like Phase 1.
+    presence_show_welcome_back: bool | None = None
+    presence_show_recent_event: bool | None = None
+    presence_allow_insert_to_chat: bool | None = None
+    presence_min_seconds_between_ui_messages: int | None = None
 
 
 class TraceHub:
@@ -512,6 +523,14 @@ if "presence_style" in _persisted_settings:
     config.PRESENCE_STYLE = _persisted_settings["presence_style"]
 if "show_presence_card" in _persisted_settings:
     config.SHOW_PRESENCE_CARD = _persisted_settings["show_presence_card"]
+if "presence_show_welcome_back" in _persisted_settings:
+    config.PRESENCE_SHOW_WELCOME_BACK = _persisted_settings["presence_show_welcome_back"]
+if "presence_show_recent_event" in _persisted_settings:
+    config.PRESENCE_SHOW_RECENT_EVENT = _persisted_settings["presence_show_recent_event"]
+if "presence_allow_insert_to_chat" in _persisted_settings:
+    config.PRESENCE_ALLOW_INSERT_TO_CHAT = _persisted_settings["presence_allow_insert_to_chat"]
+if "presence_min_seconds_between_ui_messages" in _persisted_settings:
+    config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = _persisted_settings["presence_min_seconds_between_ui_messages"]
 
 base_logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL)
 if _settings_load_error:
@@ -584,6 +603,8 @@ def _presence_settings() -> PresenceSettings:
         quiet_hours_end=config.PRESENCE_QUIET_HOURS_END,
         style=config.PRESENCE_STYLE,
         max_messages_per_hour=config.PRESENCE_MAX_MESSAGES_PER_HOUR,
+        show_welcome_back=config.PRESENCE_SHOW_WELCOME_BACK,
+        min_seconds_between_ui_messages=config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES,
     )
 
 
@@ -879,6 +900,10 @@ def _settings_payload() -> dict[str, Any]:
         "presence_quiet_hours_end": config.PRESENCE_QUIET_HOURS_END,
         "presence_style": config.PRESENCE_STYLE,
         "show_presence_card": config.SHOW_PRESENCE_CARD,
+        "presence_show_welcome_back": config.PRESENCE_SHOW_WELCOME_BACK,
+        "presence_show_recent_event": config.PRESENCE_SHOW_RECENT_EVENT,
+        "presence_allow_insert_to_chat": config.PRESENCE_ALLOW_INSERT_TO_CHAT,
+        "presence_min_seconds_between_ui_messages": config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES,
     }
 
 
@@ -2131,6 +2156,8 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         errors.append("presence_quiet_hours_start must be in HH:MM 24h format")
     if "presence_quiet_hours_end" in changes and not _HHMM_RE.match(changes["presence_quiet_hours_end"]):
         errors.append("presence_quiet_hours_end must be in HH:MM 24h format")
+    if "presence_min_seconds_between_ui_messages" in changes and changes["presence_min_seconds_between_ui_messages"] < 0:
+        errors.append("presence_min_seconds_between_ui_messages must be >= 0")
     if "ollama_host" in changes and not changes["ollama_host"].startswith(("http://", "https://")):
         errors.append("ollama_host РґРѕР»Р¶РµРЅ РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ http:// РёР»Рё https://")
 
@@ -2246,6 +2273,14 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         config.PRESENCE_STYLE = changes["presence_style"]
     if "show_presence_card" in changes:
         config.SHOW_PRESENCE_CARD = changes["show_presence_card"]
+    if "presence_show_welcome_back" in changes:
+        config.PRESENCE_SHOW_WELCOME_BACK = changes["presence_show_welcome_back"]
+    if "presence_show_recent_event" in changes:
+        config.PRESENCE_SHOW_RECENT_EVENT = changes["presence_show_recent_event"]
+    if "presence_allow_insert_to_chat" in changes:
+        config.PRESENCE_ALLOW_INSERT_TO_CHAT = changes["presence_allow_insert_to_chat"]
+    if "presence_min_seconds_between_ui_messages" in changes:
+        config.PRESENCE_MIN_SECONDS_BETWEEN_UI_MESSAGES = changes["presence_min_seconds_between_ui_messages"]
 
     client_affecting = {"primary_model", "ollama_host", "request_timeout_seconds", "num_ctx", "num_predict"}
     if client_affecting & changes.keys():
@@ -2528,10 +2563,45 @@ async def presence_status() -> dict[str, Any]:
 async def presence_ping() -> dict[str, Any]:
     """Called by the frontend on meaningful user interaction (click/keydown,
     throttled client-side) — updates last_user_activity_at and can move
-    idle -> available."""
+    idle -> available. Phase 2: a ping that ends a real idle period (elapsed
+    time >= presence_idle_minutes, checked by time rather than state labels
+    so returns during quiet hours are still recognized) may create a
+    welcome-back UI event — a deterministic Presence Card line, never a chat
+    message, never an LLM call, never TTS."""
     base_logger.event("presence_ping")
-    transition = presence_service.record_user_activity(_presence_settings())
+    settings = _presence_settings()
+    transition = presence_service.record_user_activity(settings)
     await _apply_presence_transition(transition)
+
+    if settings.idle_minutes > 0 and transition.idle_gap_seconds >= settings.idle_minutes * 60:
+        result = presence_service.maybe_create_welcome_back(settings)
+        if result.outcome == "created":
+            base_logger.event(
+                "presence_welcome_back_created",
+                style=result.event["style"],
+                variant=result.event["variant"],
+                idle_gap_seconds=round(transition.idle_gap_seconds),
+                console_message="[PRESENCE] welcome-back event created (UI only, not a chat message)",
+            )
+            await trace_hub.broadcast({"event": "presence_welcome_back_created", "style": result.event["style"]})
+        elif result.outcome == "skipped_quiet":
+            base_logger.event(
+                "presence_behavior_skipped_quiet",
+                behavior="welcome_back",
+                console_message="[PRESENCE] welcome-back suppressed: quiet mode/quiet hours",
+            )
+            await trace_hub.broadcast({"event": "presence_behavior_skipped_quiet", "behavior": "welcome_back"})
+        elif result.outcome == "throttled":
+            base_logger.event(
+                "presence_behavior_throttled",
+                behavior="welcome_back",
+                console_message="[PRESENCE] welcome-back suppressed: min-seconds throttle",
+            )
+            await trace_hub.broadcast({"event": "presence_behavior_throttled", "behavior": "welcome_back"})
+        # "disabled"/"not_applicable" are silent — an explicitly turned-off
+        # feature is not an anomaly worth a trace event on every return.
+        return presence_service.get_status(settings).state.to_dict()
+
     return transition.state.to_dict()
 
 
@@ -2575,7 +2645,44 @@ async def presence_say() -> dict[str, Any]:
         console_message="[PRESENCE] say_something " + ("throttled" if result.throttled else "ok"),
     )
     await trace_hub.broadcast({"event": "presence_say_requested", "throttled": result.throttled})
-    return {"message": result.message, "throttled": result.throttled, "style": result.style}
+    return {"message": result.message, "throttled": result.throttled, "style": result.style, "variant": result.variant}
+
+
+@app.post("/api/presence/activity")
+async def presence_activity(payload: PresenceActivityRequest) -> dict[str, Any]:
+    """Phase 2 — lets the frontend report the parts of the voice lifecycle
+    the backend genuinely cannot see: raw mic recording (before any
+    /api/voice/stt/transcribe call) and actual audio playback (after
+    /api/voice/synthesize returned). "available" only clears a
+    listening/speaking activity — it can never wipe a backend-owned
+    "thinking" set by an in-flight chat turn (see clear_activity's only_if)."""
+    activity = payload.activity.strip()
+    if activity not in ("listening", "speaking", "available"):
+        raise HTTPException(status_code=400, detail="activity must be one of: listening, speaking, available")
+
+    settings = _presence_settings()
+    if activity == "available":
+        transition = presence_service.clear_activity(settings, only_if=("listening", "speaking"))
+    else:
+        transition = presence_service.set_activity(activity, settings)
+
+    base_logger.event(
+        "presence_frontend_activity",
+        activity=activity,
+        source=payload.source,
+    )
+    await _apply_presence_transition(transition)
+    return transition.state.to_dict()
+
+
+@app.post("/api/presence/event/dismiss")
+async def presence_event_dismiss() -> dict[str, Any]:
+    """Phase 2 — clears the Presence Card's "Latest event" block. Purely
+    UI-side state; never touches conversation history."""
+    dismissed = presence_service.dismiss_event()
+    base_logger.event("presence_event_dismissed", had_event=dismissed)
+    await trace_hub.broadcast({"event": "presence_event_dismissed", "had_event": dismissed})
+    return {"dismissed": dismissed, **presence_service.get_status(_presence_settings()).state.to_dict()}
 
 
 @app.get("/api/presence/events")

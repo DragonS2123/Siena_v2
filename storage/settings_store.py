@@ -80,6 +80,13 @@ PERSISTABLE_FIELDS = (
     "presence_quiet_hours_end",
     "presence_style",
     "show_presence_card",
+    # Presence Behavior Layer (0.2.1, Phase 2) — welcome-back/recent-event/
+    # insert-to-composer behavior gates, same live-read discipline as the
+    # Phase 1 presence fields above.
+    "presence_show_welcome_back",
+    "presence_show_recent_event",
+    "presence_allow_insert_to_chat",
+    "presence_min_seconds_between_ui_messages",
 )
 
 

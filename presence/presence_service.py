@@ -35,6 +35,11 @@ _DEFAULT_MESSAGES: dict[str, str] = {
 # presence_style. Never injected into chat history by the backend; the
 # frontend only ever shows these as a transient status line unless the user
 # explicitly sends one to chat.
+#
+# These RU strings are the canonical `message` value; the frontend renders
+# the localized line via i18n keys `presence.event.<type>.<style>.<variant>`
+# instead (EN/RU parity), falling back to `message` if a key is missing —
+# which is why every result also carries a `variant` index.
 _SAY_SOMETHING_POOL: dict[str, list[str]] = {
     "calm": [
         "Я здесь, если понадоблюсь.",
@@ -53,6 +58,28 @@ _SAY_SOMETHING_POOL: dict[str, list[str]] = {
     ],
 }
 
+# Welcome-back lines (Phase 2) — same deterministic, no-LLM discipline as
+# the say pool above. Created only on a real idle -> available return (see
+# maybe_create_welcome_back), shown only in the Presence Card as a UI event,
+# never written into conversation history, never spoken via TTS.
+_WELCOME_BACK_POOL: dict[str, list[str]] = {
+    "calm": [
+        "Ты вернулся. Я рядом.",
+        "Я здесь, если хочешь продолжить.",
+        "С возвращением. Можем продолжить спокойно.",
+    ],
+    "playful": [
+        "О, ты вернулся! Я тут.",
+        "С возвращением. Продолжаем?",
+        "А вот и ты. Я никуда не уходила.",
+    ],
+    "minimal": [
+        "Ты вернулся.",
+        "С возвращением.",
+        "Снова на связи.",
+    ],
+}
+
 
 @dataclass(frozen=True)
 class PresenceSettings:
@@ -68,6 +95,10 @@ class PresenceSettings:
     quiet_hours_end: str
     style: str
     max_messages_per_hour: int
+    # Phase 2 fields — defaulted so Phase 1 call sites/tests that construct
+    # this bundle without them keep working unchanged.
+    show_welcome_back: bool = True
+    min_seconds_between_ui_messages: int = 60
 
 
 @dataclass
@@ -80,6 +111,13 @@ class PresenceTransition:
     state: PresenceState
     previous_state: str
     new_state: str
+    # Phase 2 — how long the user had been inactive before this activity
+    # (only set by record_user_activity). The ping endpoint compares this
+    # against idle_minutes to detect a "return" by real elapsed time rather
+    # than by state labels, because during quiet mode/quiet hours the
+    # visible state is "quiet", never "idle" — a label-based idle->available
+    # check would silently miss returns that happen while quiet.
+    idle_gap_seconds: float = 0.0
 
     @property
     def changed(self) -> bool:
@@ -98,6 +136,18 @@ class SayResult:
     message: str | None
     throttled: bool
     style: str
+    variant: int | None = None
+
+
+@dataclass
+class WelcomeBackResult:
+    """Outcome of maybe_create_welcome_back() — the endpoint maps each
+    non-created outcome to its own trace event (presence_behavior_skipped_quiet
+    / presence_behavior_throttled) instead of presence_service knowing about
+    tracing at all."""
+
+    outcome: str  # "created" | "skipped_quiet" | "throttled" | "disabled" | "not_applicable"
+    event: dict | None = None
 
 
 def _iso(ts: float | None) -> str | None:
@@ -143,6 +193,12 @@ class PresenceService:
         # throttling (no persistence, resets on restart, same as everything
         # else in this service).
         self._say_timestamps: list[float] = []
+        # Phase 2 — latest UI-only presence event (welcome_back / say) and
+        # the min-seconds throttle anchor for proactive UI messages. Both
+        # in-memory only, reset on restart like everything else here.
+        self._recent_event: dict | None = None
+        self._last_ui_message_at: float | None = None
+        self._welcome_back_count = 0
 
     # ---- internal -------------------------------------------------------
 
@@ -193,6 +249,7 @@ class PresenceService:
             quiet_until=_iso(self._quiet_until),
             uptime_seconds=round(time.time() - self._started_at),
             current_activity=self._current_activity,
+            recent_event=self._recent_event,
         )
 
     # ---- mutation (called from existing chat/TTS/STT lifecycle points) --
@@ -200,10 +257,12 @@ class PresenceService:
     def record_user_activity(self, settings: PresenceSettings) -> PresenceTransition:
         """POST /api/presence/ping — meaningful user interaction in the UI."""
         previous_state = self._effective_state(settings)
-        self._last_user_activity_at = time.time()
+        now = time.time()
+        idle_gap = now - self._last_user_activity_at
+        self._last_user_activity_at = now
         self._error_message = None
         new_state = self._effective_state(settings)
-        return PresenceTransition(self._snapshot(new_state), previous_state, new_state)
+        return PresenceTransition(self._snapshot(new_state), previous_state, new_state, idle_gap_seconds=idle_gap)
 
     def set_activity(self, activity: str, settings: PresenceSettings) -> PresenceTransition:
         """activity: one of thinking/listening/speaking. Called only from
@@ -219,11 +278,18 @@ class PresenceService:
         new_state = self._effective_state(settings)
         return PresenceTransition(self._snapshot(new_state), previous_state, new_state)
 
-    def clear_activity(self, settings: PresenceSettings) -> PresenceTransition:
+    def clear_activity(
+        self, settings: PresenceSettings, only_if: tuple[str, ...] | None = None
+    ) -> PresenceTransition:
         """Ends whatever transient activity was set via set_activity() —
-        falls back to idle/available/quiet derivation."""
+        falls back to idle/available/quiet derivation. `only_if` restricts
+        the clear to specific current activities: the frontend's
+        POST /api/presence/activity "available" uses ("listening", "speaking")
+        so a stale playback-finished signal can never wipe a backend-owned
+        "thinking" set by an in-flight chat turn."""
         previous_state = self._effective_state(settings)
-        self._current_activity = None
+        if only_if is None or self._current_activity in only_if:
+            self._current_activity = None
         new_state = self._effective_state(settings)
         return PresenceTransition(self._snapshot(new_state), previous_state, new_state)
 
@@ -274,7 +340,62 @@ class PresenceService:
             return SayResult(message=None, throttled=True, style=settings.style)
 
         pool = _SAY_SOMETHING_POOL.get(settings.style, _SAY_SOMETHING_POOL["calm"])
-        message = pool[len(self._say_timestamps) % len(pool)]
+        variant = len(self._say_timestamps) % len(pool)
+        message = pool[variant]
         self._say_timestamps.append(now)
         self._last_presence_message_at = now
-        return SayResult(message=message, throttled=False, style=settings.style)
+        self._recent_event = {
+            "type": "say",
+            "style": settings.style if settings.style in _SAY_SOMETHING_POOL else "calm",
+            "variant": variant,
+            "message": message,
+            "created_at": _iso(now),
+        }
+        return SayResult(message=message, throttled=False, style=settings.style, variant=variant)
+
+    # ---- welcome back (Phase 2 — deterministic UI event, no LLM, no TTS) --
+
+    def maybe_create_welcome_back(self, settings: PresenceSettings) -> WelcomeBackResult:
+        """Called by the ping endpoint on a real idle -> available return.
+        Produces a UI-only event for the Presence Card — never a chat
+        message. Suppressed while quiet (manual quiet mode OR an active
+        quiet-hours window — _effective_state covers both) and throttled by
+        min_seconds_between_ui_messages so a flaky idle boundary can't spam
+        the card."""
+        if not settings.enabled:
+            return WelcomeBackResult(outcome="not_applicable")
+        if not settings.show_welcome_back:
+            return WelcomeBackResult(outcome="disabled")
+        if self._effective_state(settings) == "quiet":
+            return WelcomeBackResult(outcome="skipped_quiet")
+        now = time.time()
+        if (
+            self._last_ui_message_at is not None
+            and now - self._last_ui_message_at < settings.min_seconds_between_ui_messages
+        ):
+            return WelcomeBackResult(outcome="throttled")
+
+        style = settings.style if settings.style in _WELCOME_BACK_POOL else "calm"
+        pool = _WELCOME_BACK_POOL[style]
+        variant = self._welcome_back_count % len(pool)
+        self._welcome_back_count += 1
+        self._last_ui_message_at = now
+        self._last_presence_message_at = now
+        event = {
+            "type": "welcome_back",
+            "style": style,
+            "variant": variant,
+            "message": pool[variant],
+            "created_at": _iso(now),
+        }
+        self._recent_event = event
+        return WelcomeBackResult(outcome="created", event=event)
+
+    # ---- recent event dismissal (Phase 2) ---------------------------------
+
+    def dismiss_event(self) -> bool:
+        """Returns True if there was an event to dismiss. Purely UI-side
+        state — dismissing never touches conversation history."""
+        had_event = self._recent_event is not None
+        self._recent_event = None
+        return had_event

@@ -303,4 +303,17 @@ export const sienaClient = {
   setPresenceWake: () => request<PresenceStatus>("/api/presence/wake", { method: "POST" }),
 
   sayPresence: () => request<PresenceSayResponse>("/api/presence/say", { method: "POST" }),
+
+  // Phase 2 — frontend-reported voice lifecycle (raw mic recording / actual
+  // audio playback, which the backend cannot see on its own). Best-effort:
+  // presence is a soft indicator, never worth failing the actual voice UX
+  // over, so callers don't need to await/handle failures here.
+  postPresenceActivity: (activity: "listening" | "speaking" | "available") =>
+    request<PresenceStatus>("/api/presence/activity", {
+      method: "POST",
+      body: JSON.stringify({ activity, source: "frontend" }),
+    }).catch(() => undefined),
+
+  dismissPresenceEvent: () =>
+    request<PresenceStatus & { dismissed: boolean }>("/api/presence/event/dismiss", { method: "POST" }),
 };
