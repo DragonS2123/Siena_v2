@@ -1,0 +1,32 @@
+ollama>=0.4.0
+requests>=2.33.0
+beautifulsoup4>=4.12.0
+ddgs>=9.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# --- Runtime diagnostics (Runtime view CPU/RAM meters, core/system_metrics.py) ---
+psutil>=6.0.0
+
+# --- Voice Layer: STT ---
+faster-whisper>=1.2.0
+sounddevice>=0.5.0
+soundfile>=0.13.0
+numpy>=1.26.0
+
+# --- Voice Layer: TTS (Silero, Russian) ---
+# Replaces Kokoro (didn't support Russian — see DONEARCHITECTURE.md). Silero
+# itself loads via torch.hub at first real synthesis call, not at import time
+# or backend startup — see voice/tts.py. If loading fails, TTS returns a clear
+# tts_unavailable error; STT keeps working independently either way.
+torch>=2.0.0
+omegaconf>=2.3.0
+
+# --- Memory: hybrid vector + keyword search ---
+# Optional at runtime: if unavailable or the model fails to load, memory search
+# falls back to keyword/fuzzy ranking (memory/search.py) automatically.
+sentence-transformers>=3.0.0
+
+# --- Testing (dev only) ---
+pytest>=8.0.0

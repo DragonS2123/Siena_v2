@@ -1,0 +1,123 @@
+# Siena v2 — release hygiene (0.2.0 audit pass)
+# No .gitignore existed before this pass. None of the entries below are
+# source code; they're local venvs, vendored/downloaded binaries+models,
+# user data, and editor/browser scratch state. See docs/KNOWN_LIMITATIONS_0.2.0.md
+# and the release audit report for why each group is excluded.
+
+# --- Python virtual environments (multi-GB each; never ship, never commit) ---
+.venv/
+.venv-*/
+venv/
+
+# --- Python cache ---
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+
+# --- Vendored/downloaded external build trees (whisper.cpp, qwentts.cpp —
+# built binaries + model weights, multiple GB; see docs/INSTALL.md for how
+# to obtain these separately) ---
+external/
+
+# --- Frontend build output / deps ---
+Siena v2 Control Panel UI/node_modules/
+Siena v2 Control Panel UI/dist/
+Siena v2 Control Panel UI/.electron-data/
+
+# --- Runtime-generated user data (never ship someone else's conversations,
+# memory, settings, or downloaded model weight caches) ---
+storage/settings.json
+storage/conversations.sqlite3
+storage/voice_profiles.json
+storage/attachments/
+storage/models/
+storage/tts/
+storage/voice_probe/
+storage/stt_probe/
+storage/__pycache__/
+logs/
+*.jsonl
+
+# --- Ad-hoc dev/debug artifacts (should never have been at repo root) ---
+backend.dev.log
+backend.dev.err.log
+frontend.dev.log
+frontend.dev.err.log
+*.wav
+
+# --- Browser smoke-test profiles (Edge/CDP manual testing scratch dirs) ---
+edge-*-profile*/
+
+# --- Editor/tooling local state ---
+.vscode/
+.idea/
+*.swp
+
+# --- Runtime databases / sqlite sidecars ---
+storage/*.sqlite
+storage/*.sqlite3
+storage/*.sqlite-wal
+storage/*.sqlite-shm
+storage/*.sqlite3-wal
+storage/*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+
+# --- Runtime game snapshots / session data ---
+storage/game/
+
+# --- Runtime memory/insights/cache data ---
+storage/memory/
+storage/insights/
+storage/cache/
+storage/tmp/
+storage/temp/
+
+# --- Local env/config ---
+.env
+.env.*
+!.env.example
+
+# --- Model / ML weights anywhere, safety net ---
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# --- Local archives / dumps ---
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+desktop.ini
+logs/**/*.jsonl
+storage/**/*.jsonl
+*.log.jsonl
+
+# --- Runtime memory databases / private memory state ---
+memory/*.sqlite
+memory/*.sqlite3
+memory/*.sqlite-wal
+memory/*.sqlite-shm
+memory/*.sqlite3-wal
+memory/*.sqlite3-shm
+memory/short_memory.json
+
+# --- Accidental PowerShell/edit artifacts ---
+*-replace
+-replace
+
+# --- Old local audit/debug leftovers ---
+requirements-before-amd-test.txt
+test_glm_ocr_direct.py
+test_vision_direct.py
