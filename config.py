@@ -268,6 +268,24 @@ MEMORY_VECTORS_DB_PATH = BASE_DIR / "memory" / "memory_vectors.sqlite3"
 CANDIDATE_MEMORY_DB_PATH = BASE_DIR / "memory" / "candidate_memory.sqlite3"
 CANDIDATE_MEMORY_LIST_DEFAULT_LIMIT = 50
 
+# --- Presence layer (0.2.1, Phase 1) --- лёгкий, локальный, opt-in слой
+# рантайм-состояния (presence/), НЕ чат-функция и НЕ автономный агент.
+# Runtime только исполняет и хранит эти флаги — включение/выключение и все
+# пороги задаёт человек через Settings UI (POST /api/settings), тот же
+# config.X = value + PERSISTABLE_FIELDS механизм, что и остальные settings.
+# allow_proactive_presence_messages по умолчанию False — по соображениям
+# безопасности от спама: automatic присутствие никогда не создаёт сообщения
+# в чате, пока человек явно это не разрешит.
+ENABLE_PRESENCE = True
+ALLOW_PROACTIVE_PRESENCE_MESSAGES = False
+PRESENCE_IDLE_MINUTES = 15
+PRESENCE_MAX_MESSAGES_PER_HOUR = 2
+PRESENCE_QUIET_HOURS_ENABLED = False
+PRESENCE_QUIET_HOURS_START = "23:00"
+PRESENCE_QUIET_HOURS_END = "08:00"
+PRESENCE_STYLE = "calm"  # "calm" | "playful" | "minimal" — see presence/presence_service.py's message pool
+SHOW_PRESENCE_CARD = True
+
 # --- Chat input ---
 CHAT_INPUT_MAX_CHARS = 4000  # обеспечивается и сервером (/api/chat), и UI-счётчиком
 

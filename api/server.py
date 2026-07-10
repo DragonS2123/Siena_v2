@@ -52,6 +52,8 @@ from ocr.glm_ocr_service import (
     clean_ocr_text,
     ocr_quality,
 )
+from presence import PresenceService, PresenceSettings
+from presence.presence_service import PresenceTransition
 from storage.conversation_store import ConversationStore
 from storage.settings_store import PERSISTABLE_FIELDS, SettingsStore
 from tools.candidate_memory_tools import promote_candidate
@@ -115,6 +117,11 @@ class SetActiveChatModelRequest(BaseModel):
 class ModelLifecycleUnloadRequest(BaseModel):
     target: str  # "tool_models" | "all_non_chat" | "specific" — validated in the handler
     model: str | None = None  # required only when target == "specific"
+
+
+class PresenceQuietRequest(BaseModel):
+    # Optional — omitted/None means quiet indefinitely until POST /api/presence/wake.
+    minutes: int | None = None
 
 
 class TranslateRequest(BaseModel):
@@ -232,6 +239,19 @@ class SettingsUpdate(BaseModel):
     # Real UI localization pass — application UI language only, separate
     # from stt_language/preferred_response_language above.
     interface_language: str | None = None
+    # Presence layer (0.2.1, Phase 1) — real, persisted, applied live (see
+    # presence/presence_service.py::_presence_settings). Off/conservative
+    # defaults: allow_proactive_presence_messages is False so Presence never
+    # creates chat messages on its own unless a human explicitly opts in.
+    enable_presence: bool | None = None
+    allow_proactive_presence_messages: bool | None = None
+    presence_idle_minutes: int | None = None
+    presence_max_messages_per_hour: int | None = None
+    presence_quiet_hours_enabled: bool | None = None
+    presence_quiet_hours_start: str | None = None
+    presence_quiet_hours_end: str | None = None
+    presence_style: str | None = None
+    show_presence_card: bool | None = None
 
 
 class TraceHub:
@@ -474,6 +494,24 @@ if "preferred_response_language" in _persisted_settings:
     config.PREFERRED_RESPONSE_LANGUAGE = _persisted_settings["preferred_response_language"]
 if "interface_language" in _persisted_settings:
     config.INTERFACE_LANGUAGE = _persisted_settings["interface_language"]
+if "enable_presence" in _persisted_settings:
+    config.ENABLE_PRESENCE = _persisted_settings["enable_presence"]
+if "allow_proactive_presence_messages" in _persisted_settings:
+    config.ALLOW_PROACTIVE_PRESENCE_MESSAGES = _persisted_settings["allow_proactive_presence_messages"]
+if "presence_idle_minutes" in _persisted_settings:
+    config.PRESENCE_IDLE_MINUTES = _persisted_settings["presence_idle_minutes"]
+if "presence_max_messages_per_hour" in _persisted_settings:
+    config.PRESENCE_MAX_MESSAGES_PER_HOUR = _persisted_settings["presence_max_messages_per_hour"]
+if "presence_quiet_hours_enabled" in _persisted_settings:
+    config.PRESENCE_QUIET_HOURS_ENABLED = _persisted_settings["presence_quiet_hours_enabled"]
+if "presence_quiet_hours_start" in _persisted_settings:
+    config.PRESENCE_QUIET_HOURS_START = _persisted_settings["presence_quiet_hours_start"]
+if "presence_quiet_hours_end" in _persisted_settings:
+    config.PRESENCE_QUIET_HOURS_END = _persisted_settings["presence_quiet_hours_end"]
+if "presence_style" in _persisted_settings:
+    config.PRESENCE_STYLE = _persisted_settings["presence_style"]
+if "show_presence_card" in _persisted_settings:
+    config.SHOW_PRESENCE_CARD = _persisted_settings["show_presence_card"]
 
 base_logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL)
 if _settings_load_error:
@@ -527,6 +565,44 @@ ollama_client = OllamaClient(
 )
 chat_lock = asyncio.Lock()
 nucleares_client = NuclearesBridgeClient(snapshot_path=config.BASE_DIR / "storage" / "game" / "nucleares_snapshot.json")
+
+# Presence layer (0.2.1, Phase 1, presence/) — in-memory only, resets on
+# restart like _active_chat_model above. See presence/presence_service.py
+# for why this holds no background threads/timers.
+presence_service = PresenceService()
+
+
+def _presence_settings() -> PresenceSettings:
+    """Bundles the live config.* presence fields for presence_service calls
+    — read fresh at call time, same discipline as everything else POST
+    /api/settings can change live (see update_settings() below)."""
+    return PresenceSettings(
+        enabled=config.ENABLE_PRESENCE,
+        idle_minutes=config.PRESENCE_IDLE_MINUTES,
+        quiet_hours_enabled=config.PRESENCE_QUIET_HOURS_ENABLED,
+        quiet_hours_start=config.PRESENCE_QUIET_HOURS_START,
+        quiet_hours_end=config.PRESENCE_QUIET_HOURS_END,
+        style=config.PRESENCE_STYLE,
+        max_messages_per_hour=config.PRESENCE_MAX_MESSAGES_PER_HOUR,
+    )
+
+
+async def _apply_presence_transition(transition: "PresenceTransition", logger: "BroadcastLogger | None" = None) -> None:
+    """Logs+broadcasts presence_state_changed only when the effective state
+    actually changed — avoids spamming trace/logs on every lifecycle hook
+    call (e.g. clear_activity() when presence was already "available")."""
+    if not transition.changed:
+        return
+    log = logger or base_logger
+    fields = {
+        "previous_state": transition.previous_state,
+        "new_state": transition.new_state,
+    }
+    if logger is not None:
+        logger.event("presence_state_changed", **fields)
+    else:
+        base_logger.event("presence_state_changed", **fields)
+    await trace_hub.broadcast({"event": "presence_state_changed", **fields})
 
 # Last routing decision (Phase 4D) вЂ” purely informational, read by
 # /api/models and /api/runtime/status for "last used model" in the UI.
@@ -794,6 +870,15 @@ def _settings_payload() -> dict[str, Any]:
         "show_experimental_stream_button": config.SHOW_EXPERIMENTAL_STREAM_BUTTON,
         "preferred_response_language": config.PREFERRED_RESPONSE_LANGUAGE,
         "interface_language": config.INTERFACE_LANGUAGE,
+        "enable_presence": config.ENABLE_PRESENCE,
+        "allow_proactive_presence_messages": config.ALLOW_PROACTIVE_PRESENCE_MESSAGES,
+        "presence_idle_minutes": config.PRESENCE_IDLE_MINUTES,
+        "presence_max_messages_per_hour": config.PRESENCE_MAX_MESSAGES_PER_HOUR,
+        "presence_quiet_hours_enabled": config.PRESENCE_QUIET_HOURS_ENABLED,
+        "presence_quiet_hours_start": config.PRESENCE_QUIET_HOURS_START,
+        "presence_quiet_hours_end": config.PRESENCE_QUIET_HOURS_END,
+        "presence_style": config.PRESENCE_STYLE,
+        "show_presence_card": config.SHOW_PRESENCE_CARD,
     }
 
 
@@ -1511,6 +1596,8 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
         logger = BroadcastLogger(base_logger, trace_hub, loop, conversation_store, conversation_id)
         session = session_store.current() if conversation_id == session_store.current_id else session_store.build_session(conversation_id)
 
+        await _apply_presence_transition(presence_service.set_activity("thinking", _presence_settings()), logger)
+
         # Conversation History вЂ” С‚РµС…РЅРёС‡РµСЃРєРёР№ Р¶СѓСЂРЅР°Р», РїРёС€РµС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё,
         # СЌС‚Рѕ РЅРµ long_memory_save Рё РЅРµ СЂРµС€РµРЅРёРµ РјРѕРґРµР»Рё (СЃРј. DONEARCHITECTURE.md).
         # РҐСЂР°РЅРёС‚СЃСЏ СЂРѕРІРЅРѕ С‚Рѕ, С‡С‚Рѕ РЅР°РїРµС‡Р°С‚Р°Р» РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ вЂ” Р±РµР· СЃРѕРґРµСЂР¶РёРјРѕРіРѕ
@@ -1732,18 +1819,21 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
                     role=decision.role,
                     error=str(exc),
                 )
+            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except MaxIterationsReached as exc:
             conversation_store.merge_message_metadata(
                 user_message["id"],
                 {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
             )
+            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
             conversation_store.merge_message_metadata(
                 user_message["id"],
                 {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
             )
+            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
             raise
 
         if decision.is_specialist:
@@ -1759,6 +1849,7 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
         _last_used_model, _last_used_role = decision.model, decision.role
 
         logger.event("final_answer", content=answer, conversation_id=conversation_id)
+        await _apply_presence_transition(presence_service.clear_activity(_presence_settings()), logger)
         assistant_message = conversation_store.append_message(conversation_id, "assistant", answer, model=decision.model)
         conversation_store.merge_message_metadata(
             user_message["id"],
@@ -1972,6 +2063,11 @@ _LANGUAGE_PREFERENCE_NOTES = {
 # preference).
 _INTERFACE_LANGUAGES = {"en", "ru"}
 
+# Presence layer (0.2.1, Phase 1) — must match presence/presence_service.py's
+# _SAY_SOMETHING_POOL keys.
+_PRESENCE_STYLES = {"calm", "playful", "minimal"}
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
 
 @app.get("/api/settings")
 async def get_settings() -> dict[str, Any]:
@@ -2025,6 +2121,16 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         errors.append(f"preferred_response_language must be one of: {', '.join(sorted(_PREFERRED_RESPONSE_LANGUAGES))}")
     if "interface_language" in changes and changes["interface_language"] not in _INTERFACE_LANGUAGES:
         errors.append(f"interface_language must be one of: {', '.join(sorted(_INTERFACE_LANGUAGES))}")
+    if "presence_idle_minutes" in changes and changes["presence_idle_minutes"] < 1:
+        errors.append("presence_idle_minutes must be >= 1")
+    if "presence_max_messages_per_hour" in changes and changes["presence_max_messages_per_hour"] < 0:
+        errors.append("presence_max_messages_per_hour must be >= 0")
+    if "presence_style" in changes and changes["presence_style"] not in _PRESENCE_STYLES:
+        errors.append(f"presence_style must be one of: {', '.join(sorted(_PRESENCE_STYLES))}")
+    if "presence_quiet_hours_start" in changes and not _HHMM_RE.match(changes["presence_quiet_hours_start"]):
+        errors.append("presence_quiet_hours_start must be in HH:MM 24h format")
+    if "presence_quiet_hours_end" in changes and not _HHMM_RE.match(changes["presence_quiet_hours_end"]):
+        errors.append("presence_quiet_hours_end must be in HH:MM 24h format")
     if "ollama_host" in changes and not changes["ollama_host"].startswith(("http://", "https://")):
         errors.append("ollama_host РґРѕР»Р¶РµРЅ РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ http:// РёР»Рё https://")
 
@@ -2122,6 +2228,24 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         config.PREFERRED_RESPONSE_LANGUAGE = changes["preferred_response_language"]
     if "interface_language" in changes:
         config.INTERFACE_LANGUAGE = changes["interface_language"]
+    if "enable_presence" in changes:
+        config.ENABLE_PRESENCE = changes["enable_presence"]
+    if "allow_proactive_presence_messages" in changes:
+        config.ALLOW_PROACTIVE_PRESENCE_MESSAGES = changes["allow_proactive_presence_messages"]
+    if "presence_idle_minutes" in changes:
+        config.PRESENCE_IDLE_MINUTES = changes["presence_idle_minutes"]
+    if "presence_max_messages_per_hour" in changes:
+        config.PRESENCE_MAX_MESSAGES_PER_HOUR = changes["presence_max_messages_per_hour"]
+    if "presence_quiet_hours_enabled" in changes:
+        config.PRESENCE_QUIET_HOURS_ENABLED = changes["presence_quiet_hours_enabled"]
+    if "presence_quiet_hours_start" in changes:
+        config.PRESENCE_QUIET_HOURS_START = changes["presence_quiet_hours_start"]
+    if "presence_quiet_hours_end" in changes:
+        config.PRESENCE_QUIET_HOURS_END = changes["presence_quiet_hours_end"]
+    if "presence_style" in changes:
+        config.PRESENCE_STYLE = changes["presence_style"]
+    if "show_presence_card" in changes:
+        config.SHOW_PRESENCE_CARD = changes["show_presence_card"]
 
     client_affecting = {"primary_model", "ollama_host", "request_timeout_seconds", "num_ctx", "num_predict"}
     if client_affecting & changes.keys():
@@ -2375,6 +2499,92 @@ async def nucleares_status() -> dict[str, Any]:
         await trace_hub.broadcast({"event": "nucleares_status_failed", "error": result.get("error")})
 
     return result
+
+
+# ─── Presence layer (0.2.1, Phase 1) ────────────────────────────────────────
+# Local, lightweight, opt-in runtime-state indicator (presence/) — not a
+# chatbot feature, not an autonomous agent. GET /api/presence/status is
+# polled every 5s by the frontend (src/hooks/usePresence.ts, same cadence as
+# RuntimeStatusProvider) and is deliberately NOT broadcast to trace_hub on
+# every poll (that would flood the live Tool Trace view for a value that
+# rarely changes) — see _apply_presence_transition above, which only ever
+# logs/broadcasts presence_state_changed when the state actually changes.
+
+
+@app.get("/api/presence/status")
+async def presence_status() -> dict[str, Any]:
+    base_logger.event("presence_status_requested")
+    result = presence_service.get_status(_presence_settings())
+    if result.became_idle:
+        base_logger.event("presence_idle_detected", console_message="[PRESENCE] user went idle")
+        await trace_hub.broadcast({"event": "presence_idle_detected"})
+    if result.returned_from_idle:
+        base_logger.event("presence_return_detected", console_message="[PRESENCE] user returned from idle")
+        await trace_hub.broadcast({"event": "presence_return_detected"})
+    return result.state.to_dict()
+
+
+@app.post("/api/presence/ping")
+async def presence_ping() -> dict[str, Any]:
+    """Called by the frontend on meaningful user interaction (click/keydown,
+    throttled client-side) — updates last_user_activity_at and can move
+    idle -> available."""
+    base_logger.event("presence_ping")
+    transition = presence_service.record_user_activity(_presence_settings())
+    await _apply_presence_transition(transition)
+    return transition.state.to_dict()
+
+
+@app.post("/api/presence/quiet")
+async def presence_quiet(payload: PresenceQuietRequest = PresenceQuietRequest()) -> dict[str, Any]:
+    minutes = payload.minutes
+    transition = presence_service.enable_quiet(_presence_settings(), minutes=minutes)
+    base_logger.event(
+        "presence_quiet_enabled",
+        minutes=minutes,
+        console_message="[PRESENCE] quiet mode enabled",
+    )
+    await trace_hub.broadcast({"event": "presence_quiet_enabled", "minutes": minutes})
+    await _apply_presence_transition(transition)
+    return transition.state.to_dict()
+
+
+@app.post("/api/presence/wake")
+async def presence_wake() -> dict[str, Any]:
+    transition = presence_service.disable_quiet(_presence_settings())
+    base_logger.event("presence_quiet_disabled", console_message="[PRESENCE] quiet mode disabled")
+    await trace_hub.broadcast({"event": "presence_quiet_disabled"})
+    await _apply_presence_transition(transition)
+    return transition.state.to_dict()
+
+
+@app.post("/api/presence/say")
+async def presence_say() -> dict[str, Any]:
+    """Manual "Say something" button — a deterministic, local, no-LLM status
+    line (see presence/presence_service.py's message pool), throttled by
+    presence_max_messages_per_hour. Never persisted as a conversation
+    message; the frontend only shows it as a transient status line unless
+    the user explicitly sends it to chat (not implemented in Phase 1 — see
+    task scope: "do not persist them as normal conversation messages unless
+    user replies/clicks 'send to chat'")."""
+    result = presence_service.say_something(_presence_settings())
+    base_logger.event(
+        "presence_say_requested",
+        throttled=result.throttled,
+        style=result.style,
+        console_message="[PRESENCE] say_something " + ("throttled" if result.throttled else "ok"),
+    )
+    await trace_hub.broadcast({"event": "presence_say_requested", "throttled": result.throttled})
+    return {"message": result.message, "throttled": result.throttled, "style": result.style}
+
+
+@app.get("/api/presence/events")
+async def presence_events(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+    """Optional — recent presence_* trace events, filtered from the same
+    JSONL log every other view reads (see /api/logs/recent), so the frontend
+    never needs a second polling loop just for presence history."""
+    entries = [e for e in _read_recent_jsonl(500) if str(e.get("event", "")).startswith("presence_")]
+    return {"entries": entries[-limit:]}
 
 
 # Tool models eligible for manual unload — mirrors config.MODEL_REGISTRY's
@@ -2769,6 +2979,7 @@ async def voice_stt_transcribe(
             language=effective_language,
             console_message="[VOICE][STT][whisper.cpp] transcription started",
         )
+        await _apply_presence_transition(presence_service.set_activity("listening", _presence_settings()))
 
         try:
             result = await asyncio.to_thread(whisper_cpp_stt_service.transcribe_wav, tmp.name, effective_language)
@@ -2779,6 +2990,7 @@ async def voice_stt_transcribe(
                 error=str(exc),
                 console_message=f"[VOICE][STT][whisper.cpp] timed out: {exc}",
             )
+            await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except WhisperCppEmptyResultError as exc:
             base_logger.error(
@@ -2787,6 +2999,7 @@ async def voice_stt_transcribe(
                 error=str(exc),
                 console_message=f"[VOICE][STT][whisper.cpp] empty result: {exc}",
             )
+            await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (WhisperCppTranscriptionError, WhisperCppUnavailableError) as exc:
             base_logger.error(
@@ -2795,6 +3008,7 @@ async def voice_stt_transcribe(
                 error=str(exc),
                 console_message=f"[VOICE][STT][whisper.cpp] failed: {exc}",
             )
+            await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         base_logger.event(
@@ -2808,6 +3022,11 @@ async def voice_stt_transcribe(
                 f"(backend={result['backend']}): {result['text'][:60]!r}"
             ),
         )
+        # STT itself only recognizes text — it never decides what happens
+        # next (see the module docstring above), so presence returns to
+        # "available" here rather than guessing "thinking" — the caller
+        # (chat()) sets "thinking" itself if/when this text is actually sent.
+        await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
         return {
             "text": result["text"],
             "language": result["language"],
@@ -2836,6 +3055,11 @@ async def voice_synthesize(payload: VoiceSynthesizeRequest) -> dict[str, Any]:
         text_length=len(text),
         console_message=f"[VOICE][TTS] СЃРёРЅС‚РµР· РЅР°С‡Р°С‚ ({len(text)} СЃРёРјРІРѕР»РѕРІ)",
     )
+    # Covers the synthesis call itself — actual audio playback happens
+    # client-side (HTMLAudioElement, useSpeech.ts) where the backend has no
+    # visibility; the frontend's own presence ping on user interaction covers
+    # the rest of the UX loop without needing a second, playback-tracking API.
+    await _apply_presence_transition(presence_service.set_activity("speaking", _presence_settings()))
     start = time.monotonic()
     try:
         result = await asyncio.to_thread(voice_service.synthesize, text, payload.voice)
@@ -2846,6 +3070,7 @@ async def voice_synthesize(payload: VoiceSynthesizeRequest) -> dict[str, Any]:
             error=str(exc),
         )
         base_logger.error("voice_error", console_message=f"[VOICE] РѕС€РёР±РєР° TTS: {exc}", error=str(exc))
+        await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     duration_ms = round((time.monotonic() - start) * 1000)
@@ -2857,6 +3082,7 @@ async def voice_synthesize(payload: VoiceSynthesizeRequest) -> dict[str, Any]:
         audio_duration_sec=result["duration_sec"],
         console_message=f"[VOICE][TTS] РіРѕС‚РѕРІРѕ Р·Р° {duration_ms}РјСЃ, Р°СѓРґРёРѕ {result['duration_sec']}СЃ",
     )
+    await _apply_presence_transition(presence_service.clear_activity(_presence_settings()))
     return {
         "ok": True,
         "audio_url": f"/api/voice/audio/{result['audio_filename']}",

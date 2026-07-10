@@ -12,6 +12,7 @@ import {
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson, Languages,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Waves, Headphones, Download,
+  Sparkles,
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
@@ -26,6 +27,7 @@ import { useResourcesStatus } from "../hooks/useResourcesStatus";
 import { RuntimeStatusProvider, useRuntimeStatus } from "../hooks/useRuntimeStatus";
 import { UiPreferencesProvider, useUiPreferences } from "../hooks/useUiPreferences";
 import type { StartupPage } from "../hooks/useUiPreferences";
+import { usePresence } from "../hooks/usePresence";
 import { useSettings } from "../hooks/useSettings";
 import { useSpeech, type SpeechState, type UseSpeechResult } from "../hooks/useSpeech";
 import { useStreamingSpeech, type UseStreamingSpeechResult } from "../hooks/useStreamingSpeech";
@@ -49,7 +51,7 @@ type MainView =
 type ModelState = "idle" | "thinking" | "generating" | "tool";
 type SettingsSection =
   | "appearance" | "model" | "startup" | "tools"
-  | "code" | "voice" | "language" | "developer";
+  | "code" | "voice" | "language" | "presence" | "developer";
 type AttachmentType = "image" | "text" | "code" | "markdown" | "json" | "log";
 type VoiceState =
   | "idle" | "requesting-permission" | "listening" | "speaking-user" | "transcribing"
@@ -3482,6 +3484,7 @@ const SETTINGS_NAV: { id: SettingsSection; labelKey: string; icon: React.Element
   { id: "code", labelKey: "settings.nav.code", icon: Code2 },
   { id: "voice", labelKey: "settings.nav.voice", icon: Volume2 },
   { id: "language", labelKey: "settings.nav.language", icon: Globe },
+  { id: "presence", labelKey: "settings.nav.presence", icon: Sparkles },
   { id: "developer", labelKey: "settings.nav.developer", icon: Terminal },
 ];
 
@@ -3514,6 +3517,7 @@ function SettingsView() {
             {active === "code" && <CodeSettings />}
             {active === "voice" && <VoiceSettings />}
             {active === "language" && <LanguageSettings />}
+            {active === "presence" && <PresenceSettings />}
             {active === "developer" && <DeveloperSettings />}
           </motion.div>
         </AnimatePresence>
@@ -4146,6 +4150,82 @@ function TranslatorSettingsCard() {
   );
 }
 
+// Presence layer (0.2.1, Phase 1) — real, persisted, applied live (see
+// presence/presence_service.py). Every control here is used by the backend
+// or the Presence Card below; nothing decorative.
+function PresenceSettings() {
+  const { settings, loading, saving, saveError, save } = useSettings();
+  const { t } = useUiPreferences();
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  const persist = async (patch: Partial<SettingsPayload>) => {
+    setSaveStatus(null);
+    const ok = await save(patch);
+    setSaveStatus(ok ? t("common.saved") : null);
+  };
+
+  if (!settings) {
+    return <div className="text-xs text-[#6b5f57]">{t("common.loading")}</div>;
+  }
+
+  return (<>
+    <SectionHeader title={t("settings.presence.title")} desc={t("settings.presence.desc")} action={<Badge label={t("common.badge.persisted")} variant="ok" />} />
+    <SettingsCard title={t("settings.presence.title")}>
+      <Toggle label={t("settings.presence.enable")} sub={t("settings.presence.enableSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.enable_presence} disabled={loading || saving}
+        onChange={(v) => void persist({ enable_presence: v })} />
+      <Toggle label={t("settings.presence.showCard")} sub={t("settings.presence.showCardSub")}
+        checked={settings.show_presence_card} disabled={loading || saving}
+        onChange={(v) => void persist({ show_presence_card: v })} />
+      <Toggle label={t("settings.presence.allowProactive")} sub={t("settings.presence.allowProactiveSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.allow_proactive_presence_messages} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_proactive_presence_messages: v })} />
+      <SettingsSaveStatus saving={saving} saveError={saveError} saveStatus={saveStatus} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.idleMinutes")}>
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.idleMinutes")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.idleMinutesSub")}</p></div>
+        <input type="number" min={1} value={settings.presence_idle_minutes} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 1) void persist({ presence_idle_minutes: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.maxMessagesPerHour")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.maxMessagesPerHourSub")}</p></div>
+        <input type="number" min={0} value={settings.presence_max_messages_per_hour} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 0) void persist({ presence_max_messages_per_hour: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.quietHours")}>
+      <Toggle label={t("settings.presence.quietHours")} sub={t("settings.presence.quietHoursSub")}
+        checked={settings.presence_quiet_hours_enabled} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_quiet_hours_enabled: v })} />
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#a89f96]">{t("settings.presence.quietHoursStart")}</span>
+        <input type="time" value={settings.presence_quiet_hours_start} disabled={loading || saving}
+          onChange={(e) => void persist({ presence_quiet_hours_start: e.target.value })}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none" />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#a89f96]">{t("settings.presence.quietHoursEnd")}</span>
+        <input type="time" value={settings.presence_quiet_hours_end} disabled={loading || saving}
+          onChange={(e) => void persist({ presence_quiet_hours_end: e.target.value })}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none" />
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.style")}>
+      <div className="flex gap-2">
+        {(["calm", "playful", "minimal"] as const).map(style => (
+          <button key={style} onClick={() => void persist({ presence_style: style })} disabled={loading || saving}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${settings.presence_style === style ? "bg-[#c4644a]/12 text-[#c4644a] border-[#c4644a]/25" : "text-[#6b5f57] border-white/[0.06] hover:text-[#c8c0b7]"}`}>
+            {t(`settings.presence.style${style.charAt(0).toUpperCase()}${style.slice(1)}`)}
+          </button>
+        ))}
+      </div>
+    </SettingsCard>
+  </>);
+}
+
 function DeveloperSettings() {
   const { settings, loading, saving, error, saveError, save } = useSettings();
   const { t } = useUiPreferences();
@@ -4251,6 +4331,73 @@ function ModelStatusWidget({ state }: { state: ModelState }) {
   );
 }
 
+// ─── Presence card (0.2.1, Phase 1) ────────────────────────────────────────
+// Local, lightweight, opt-in status indicator — never calls the model.
+// Gated on both enable_presence and show_presence_card; renders nothing
+// (not even a disabled placeholder) when either is off, so a disabled
+// Presence layer stays fully invisible outside Settings, per task scope.
+
+const PRESENCE_DOT: Record<string, string> = {
+  available: "bg-green-400",
+  idle: "bg-[#6b5f57]",
+  listening: "bg-[#7dd3fc]",
+  thinking: "bg-amber-400",
+  speaking: "bg-[#c4644a]",
+  quiet: "bg-[#3a342e]",
+  offline: "bg-[#3a342e]",
+  error: "bg-red-400",
+};
+
+function PresenceCard() {
+  const { settings } = useSettings();
+  const { status, quiet, wake, say } = usePresence();
+  const { t } = useUiPreferences();
+  const [sayText, setSayText] = useState<string | null>(null);
+  const [saying, setSaying] = useState(false);
+
+  if (!settings?.enable_presence || !settings?.show_presence_card || !status) return null;
+
+  const isQuiet = status.state === "quiet";
+  const stateLabel = sayText ?? t(`presence.state.${status.state}`);
+
+  const handleSay = async () => {
+    setSaying(true);
+    const result = await say();
+    setSayText(result.throttled ? t("presence.say.throttled") : result.message);
+    setSaying(false);
+  };
+
+  return (
+    <div className="px-3 pt-2">
+      <div className="rounded-lg border border-white/[0.06] px-2.5 py-2 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <Sparkles size={12} className="text-[#c4644a] shrink-0" />
+          <span className="text-[11px] font-medium text-[#c8c0b7] truncate">{t("presence.card.title")}</span>
+          <span className={`ml-auto w-1.5 h-1.5 rounded-full shrink-0 ${PRESENCE_DOT[status.state] ?? "bg-[#3a342e]"}`} />
+        </div>
+        <div className="text-[10px] text-[#6b5f57] truncate">{stateLabel}</div>
+        <div className="flex gap-1.5">
+          {isQuiet ? (
+            <button onClick={() => void wake()}
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-[#c4644a]/25 text-[#c4644a] hover:bg-[#c4644a]/10 transition-colors">
+              {t("presence.button.wake")}
+            </button>
+          ) : (
+            <button onClick={() => void quiet()}
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors">
+              {t("presence.button.quiet")}
+            </button>
+          )}
+          <button onClick={() => void handleSay()} disabled={saying}
+            className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors disabled:opacity-40">
+            {t("presence.button.say")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 
 function Sidebar({ open, conversations, conversationsUnavailable, activeConversationId, onSelectConversation, onNewChat, view, setView, modelState }: {
@@ -4315,6 +4462,7 @@ function Sidebar({ open, conversations, conversationsUnavailable, activeConversa
             </button>
           ))}
         </div>
+        <PresenceCard />
         <ModelStatusWidget state={modelState} />
       </div>
     </motion.aside>
