@@ -2,6 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { sienaClient } from "../api/sienaClient";
 import type { SettingsPayload } from "../api/types";
 
+// Fired after every successful save so OTHER useSettings() instances can
+// refetch — each call site holds its own copy of the settings, and before
+// this event existed a component like the sidebar's PresenceCard kept
+// rendering off a stale snapshot after the Settings screen changed a value
+// (found by the Phase 2 Electron UI smoke). Not a state-management rewrite:
+// just an invalidation ping.
+export const SETTINGS_UPDATED_EVENT = "siena:settings-updated";
+
 interface UseSettingsResult {
   settings: SettingsPayload | null;
   loading: boolean;
@@ -37,6 +45,7 @@ export function useSettings(): UseSettingsResult {
     try {
       const data = await sienaClient.updateSettings(update);
       setSettings(data);
+      window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
       return true;
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to save settings");
@@ -48,6 +57,10 @@ export function useSettings(): UseSettingsResult {
 
   useEffect(() => {
     refresh();
+    // Refetch when any other useSettings() instance saves — see
+    // SETTINGS_UPDATED_EVENT above.
+    window.addEventListener(SETTINGS_UPDATED_EVENT, refresh);
+    return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, refresh);
   }, [refresh]);
 
   return { settings, loading, saving, error, saveError, refresh, save };

@@ -181,6 +181,21 @@ def test_persistable_fields_matches_expected_set():
         "preferred_response_language",
         # Real UI localization pass — application UI language.
         "interface_language",
+        # Presence layer (0.2.1, Phase 1) — presence/presence_service.py.
+        "enable_presence",
+        "allow_proactive_presence_messages",
+        "presence_idle_minutes",
+        "presence_max_messages_per_hour",
+        "presence_quiet_hours_enabled",
+        "presence_quiet_hours_start",
+        "presence_quiet_hours_end",
+        "presence_style",
+        "show_presence_card",
+        # Presence Behavior Layer (0.2.1, Phase 2).
+        "presence_show_welcome_back",
+        "presence_show_recent_event",
+        "presence_allow_insert_to_chat",
+        "presence_min_seconds_between_ui_messages",
     }
 
 

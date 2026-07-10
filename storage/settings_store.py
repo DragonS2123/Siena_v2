@@ -67,6 +67,26 @@ PERSISTABLE_FIELDS = (
     # Real UI localization pass — application UI language, separate from
     # stt_language/preferred_response_language above (see config.py).
     "interface_language",
+    # Presence layer (0.2.1, Phase 1) — presence/presence_service.py reads
+    # these live via config.*, same "no restart needed" discipline as
+    # log_level. allow_proactive_presence_messages defaults False for safety
+    # (see config.py's own comment on this field).
+    "enable_presence",
+    "allow_proactive_presence_messages",
+    "presence_idle_minutes",
+    "presence_max_messages_per_hour",
+    "presence_quiet_hours_enabled",
+    "presence_quiet_hours_start",
+    "presence_quiet_hours_end",
+    "presence_style",
+    "show_presence_card",
+    # Presence Behavior Layer (0.2.1, Phase 2) — welcome-back/recent-event/
+    # insert-to-composer behavior gates, same live-read discipline as the
+    # Phase 1 presence fields above.
+    "presence_show_welcome_back",
+    "presence_show_recent_event",
+    "presence_allow_insert_to_chat",
+    "presence_min_seconds_between_ui_messages",
 )
 
 

@@ -12,6 +12,7 @@ import {
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson, Languages,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Waves, Headphones, Download,
+  Sparkles,
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
@@ -26,6 +27,7 @@ import { useResourcesStatus } from "../hooks/useResourcesStatus";
 import { RuntimeStatusProvider, useRuntimeStatus } from "../hooks/useRuntimeStatus";
 import { UiPreferencesProvider, useUiPreferences } from "../hooks/useUiPreferences";
 import type { StartupPage } from "../hooks/useUiPreferences";
+import { usePresence } from "../hooks/usePresence";
 import { useSettings } from "../hooks/useSettings";
 import { useSpeech, type SpeechState, type UseSpeechResult } from "../hooks/useSpeech";
 import { useStreamingSpeech, type UseStreamingSpeechResult } from "../hooks/useStreamingSpeech";
@@ -49,7 +51,7 @@ type MainView =
 type ModelState = "idle" | "thinking" | "generating" | "tool";
 type SettingsSection =
   | "appearance" | "model" | "startup" | "tools"
-  | "code" | "voice" | "language" | "developer";
+  | "code" | "voice" | "language" | "presence" | "developer";
 type AttachmentType = "image" | "text" | "code" | "markdown" | "json" | "log";
 type VoiceState =
   | "idle" | "requesting-permission" | "listening" | "speaking-user" | "transcribing"
@@ -1201,6 +1203,14 @@ function VoiceStateText({ state }: { state: VoiceState }) {
 
 const MAX_COMPOSER_H = 200;
 
+// Presence Phase 2 — window event the Presence Card's "To chat" button
+// dispatches and the Composer listens for. Deliberately a DOM event, not a
+// context/prop chain: the card lives in the Sidebar and the composer deep
+// inside ChatView, and this is the whole integration (insert text, nothing
+// else) — threading a setter through half the component tree for it would
+// be the bigger change.
+const PRESENCE_INSERT_EVENT = "siena:presence-insert-to-composer";
+
 function Composer({ onSend, thinking, speech, streaming, conversationId }: {
   onSend: (text: string, attachments: Attachment[]) => Promise<SendResult>; thinking: boolean;
   speech: UseSpeechResult; streaming: UseStreamingSpeechResult; conversationId: string | null;
@@ -1304,6 +1314,49 @@ function Composer({ onSend, thinking, speech, streaming, conversationId }: {
   const voiceActive = voiceState !== "idle";
   const isError = voiceState === "error-mic" || voiceState === "error-tts";
   const isSiena = voiceState === "speaking-siena" || voiceState === "fallback";
+
+  // Presence Behavior Layer (Phase 2) — reports the voice lifecycle the
+  // backend can't see on its own: raw mic recording (before any transcribe
+  // call) and actual audio playback (after synthesize returned). Primitives
+  // are destructured above/here rather than passing hook objects into the
+  // deps array (see the hook-identity-stability convention used across
+  // ChatView's effects). Posted only on change, fire-and-forget — presence
+  // is a soft indicator, never worth failing the voice UX over.
+  const speechState = speech.state;
+  const streamingStatus = streaming.status;
+  const recorderStatus = recorder.status;
+  const conversationState = conversation.state;
+  const presenceActivity: "listening" | "speaking" | "available" =
+    recorderStatus === "recording" ||
+    conversationState === "listening" || conversationState === "speech_detected" ||
+    conversationState === "silence_wait" || conversationState === "finalizing_wait"
+      ? "listening"
+      : speechState === "speaking" || streamingStatus === "streaming" || conversationState === "speaking"
+        ? "speaking"
+        : "available";
+  const lastReportedActivityRef = useRef<"listening" | "speaking" | "available">("available");
+  useEffect(() => {
+    if (lastReportedActivityRef.current === presenceActivity) return;
+    lastReportedActivityRef.current = presenceActivity;
+    void sienaClient.postPresenceActivity(presenceActivity);
+  }, [presenceActivity]);
+
+  // Presence Card's "To chat" (Phase 2) — inserts the event text into this
+  // composer. Insert ONLY: never calls onSend, never creates a message —
+  // the human still has to press Send themselves (No Chat Pollution rule).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const text = (e as CustomEvent<{ text?: string }>).detail?.text;
+      if (typeof text !== "string" || !text.trim()) return;
+      setValue(prev => {
+        if (!prev.trim()) return text;
+        return prev + (/\s$/.test(prev) ? "" : " ") + text;
+      });
+      textareaRef.current?.focus();
+    };
+    window.addEventListener(PRESENCE_INSERT_EVENT, handler);
+    return () => window.removeEventListener(PRESENCE_INSERT_EVENT, handler);
+  }, []);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -3482,6 +3535,7 @@ const SETTINGS_NAV: { id: SettingsSection; labelKey: string; icon: React.Element
   { id: "code", labelKey: "settings.nav.code", icon: Code2 },
   { id: "voice", labelKey: "settings.nav.voice", icon: Volume2 },
   { id: "language", labelKey: "settings.nav.language", icon: Globe },
+  { id: "presence", labelKey: "settings.nav.presence", icon: Sparkles },
   { id: "developer", labelKey: "settings.nav.developer", icon: Terminal },
 ];
 
@@ -3514,6 +3568,7 @@ function SettingsView() {
             {active === "code" && <CodeSettings />}
             {active === "voice" && <VoiceSettings />}
             {active === "language" && <LanguageSettings />}
+            {active === "presence" && <PresenceSettings />}
             {active === "developer" && <DeveloperSettings />}
           </motion.div>
         </AnimatePresence>
@@ -4146,6 +4201,99 @@ function TranslatorSettingsCard() {
   );
 }
 
+// Presence layer (0.2.1, Phase 1) — real, persisted, applied live (see
+// presence/presence_service.py). Every control here is used by the backend
+// or the Presence Card below; nothing decorative.
+function PresenceSettings() {
+  const { settings, loading, saving, saveError, save } = useSettings();
+  const { t } = useUiPreferences();
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  const persist = async (patch: Partial<SettingsPayload>) => {
+    setSaveStatus(null);
+    const ok = await save(patch);
+    setSaveStatus(ok ? t("common.saved") : null);
+  };
+
+  if (!settings) {
+    return <div className="text-xs text-[#6b5f57]">{t("common.loading")}</div>;
+  }
+
+  return (<>
+    <SectionHeader title={t("settings.presence.title")} desc={t("settings.presence.desc")} action={<Badge label={t("common.badge.persisted")} variant="ok" />} />
+    <SettingsCard title={t("settings.presence.title")}>
+      <Toggle label={t("settings.presence.enable")} sub={t("settings.presence.enableSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.enable_presence} disabled={loading || saving}
+        onChange={(v) => void persist({ enable_presence: v })} />
+      <Toggle label={t("settings.presence.showCard")} sub={t("settings.presence.showCardSub")}
+        checked={settings.show_presence_card} disabled={loading || saving}
+        onChange={(v) => void persist({ show_presence_card: v })} />
+      <Toggle label={t("settings.presence.allowProactive")} sub={t("settings.presence.allowProactiveSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.allow_proactive_presence_messages} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_proactive_presence_messages: v })} />
+      <SettingsSaveStatus saving={saving} saveError={saveError} saveStatus={saveStatus} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.idleMinutes")}>
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.idleMinutes")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.idleMinutesSub")}</p></div>
+        <input type="number" min={1} value={settings.presence_idle_minutes} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 1) void persist({ presence_idle_minutes: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.maxMessagesPerHour")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.maxMessagesPerHourSub")}</p></div>
+        <input type="number" min={0} value={settings.presence_max_messages_per_hour} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 0) void persist({ presence_max_messages_per_hour: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.quietHours")}>
+      <Toggle label={t("settings.presence.quietHours")} sub={t("settings.presence.quietHoursSub")}
+        checked={settings.presence_quiet_hours_enabled} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_quiet_hours_enabled: v })} />
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#a89f96]">{t("settings.presence.quietHoursStart")}</span>
+        <input type="time" value={settings.presence_quiet_hours_start} disabled={loading || saving}
+          onChange={(e) => void persist({ presence_quiet_hours_start: e.target.value })}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none" />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-[#a89f96]">{t("settings.presence.quietHoursEnd")}</span>
+        <input type="time" value={settings.presence_quiet_hours_end} disabled={loading || saving}
+          onChange={(e) => void persist({ presence_quiet_hours_end: e.target.value })}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none" />
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.style")}>
+      <div className="flex gap-2">
+        {(["calm", "playful", "minimal"] as const).map(style => (
+          <button key={style} onClick={() => void persist({ presence_style: style })} disabled={loading || saving}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${settings.presence_style === style ? "bg-[#c4644a]/12 text-[#c4644a] border-[#c4644a]/25" : "text-[#6b5f57] border-white/[0.06] hover:text-[#c8c0b7]"}`}>
+            {t(`settings.presence.style${style.charAt(0).toUpperCase()}${style.slice(1)}`)}
+          </button>
+        ))}
+      </div>
+    </SettingsCard>
+    <SettingsCard title={t("settings.presence.behavior")}>
+      <Toggle label={t("settings.presence.showWelcomeBack")} sub={t("settings.presence.showWelcomeBackSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.presence_show_welcome_back} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_show_welcome_back: v })} />
+      <Toggle label={t("settings.presence.showRecentEvent")} sub={t("settings.presence.showRecentEventSub")}
+        checked={settings.presence_show_recent_event} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_show_recent_event: v })} />
+      <Toggle label={t("settings.presence.allowInsertToChat")} sub={t("settings.presence.allowInsertToChatSub")}
+        checked={settings.presence_allow_insert_to_chat} disabled={loading || saving}
+        onChange={(v) => void persist({ presence_allow_insert_to_chat: v })} />
+      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.presence.minSecondsBetween")}</span><p className="text-[10px] text-[#4b4540] mt-px">{t("settings.presence.minSecondsBetweenSub")}</p></div>
+        <input type="number" min={0} value={settings.presence_min_seconds_between_ui_messages} disabled={loading || saving}
+          onChange={(e) => { const v = Number(e.target.value); if (v >= 0) void persist({ presence_min_seconds_between_ui_messages: v }); }}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+      </div>
+    </SettingsCard>
+  </>);
+}
+
 function DeveloperSettings() {
   const { settings, loading, saving, error, saveError, save } = useSettings();
   const { t } = useUiPreferences();
@@ -4251,6 +4399,121 @@ function ModelStatusWidget({ state }: { state: ModelState }) {
   );
 }
 
+// ─── Presence card (0.2.1, Phase 1) ────────────────────────────────────────
+// Local, lightweight, opt-in status indicator — never calls the model.
+// Gated on both enable_presence and show_presence_card; renders nothing
+// (not even a disabled placeholder) when either is off, so a disabled
+// Presence layer stays fully invisible outside Settings, per task scope.
+
+const PRESENCE_DOT: Record<string, string> = {
+  available: "bg-green-400",
+  idle: "bg-[#6b5f57]",
+  listening: "bg-[#7dd3fc]",
+  thinking: "bg-amber-400",
+  speaking: "bg-[#c4644a]",
+  quiet: "bg-[#3a342e]",
+  offline: "bg-[#3a342e]",
+  error: "bg-red-400",
+};
+
+function PresenceCard({ setView }: { setView: (v: MainView) => void }) {
+  const { settings } = useSettings();
+  const { status, quiet, wake, say, refresh, dismissEvent } = usePresence();
+  const { t } = useUiPreferences();
+  const [saying, setSaying] = useState(false);
+  const [sayThrottled, setSayThrottled] = useState(false);
+
+  // Gated on the live settings AND the backend-derived state: the settings
+  // instance refreshes via SETTINGS_UPDATED_EVENT when the Settings screen
+  // saves, and the "offline" check catches enable_presence=false within one
+  // 5s status poll even if settings were changed outside this UI (Phase 1
+  // smoke found the card surviving both toggles on a stale snapshot).
+  if (!settings?.enable_presence || !settings?.show_presence_card || !status || status.state === "offline") {
+    return null;
+  }
+
+  const isQuiet = status.state === "quiet";
+  const style = settings.presence_style ?? "calm";
+
+  // Style-aware status line (Phase 2): try the styled key first, fall back
+  // to the base per-state line — only available/quiet have styled variants
+  // for now, matching the task's examples.
+  const styledKey = `presence.state.${status.state}.${style}`;
+  const styledLabel = t(styledKey);
+  const stateLabel = sayThrottled ? t("presence.say.throttled") : styledLabel !== styledKey ? styledLabel : t(`presence.state.${status.state}`);
+
+  const event = settings.presence_show_recent_event ? status.recent_event : null;
+  const eventKey = event ? `presence.event.${event.type}.${event.style}.${event.variant}` : null;
+  const eventText = event && eventKey ? (t(eventKey) !== eventKey ? t(eventKey) : event.message) : null;
+
+  const handleSay = async () => {
+    setSaying(true);
+    const result = await say();
+    setSayThrottled(result.throttled);
+    // The spoken line lands in status.recent_event server-side — refresh so
+    // the "Latest event" block shows it without waiting for the next poll.
+    await refresh();
+    setSaying(false);
+  };
+
+  const handleInsertToChat = () => {
+    if (!eventText) return;
+    void sienaClient.logClientEvent("presence_insert_to_composer_requested", { event_type: event?.type });
+    setView("chat");
+    // Insert only — the Composer's listener appends to the input; nothing
+    // is ever sent automatically (No Chat Pollution rule).
+    window.dispatchEvent(new CustomEvent(PRESENCE_INSERT_EVENT, { detail: { text: eventText } }));
+  };
+
+  return (
+    <div className="px-3 pt-2">
+      <div className="rounded-lg border border-white/[0.06] px-2.5 py-2 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <Sparkles size={12} className="text-[#c4644a] shrink-0" />
+          <span className="text-[11px] font-medium text-[#c8c0b7] truncate">{t("presence.card.title")}</span>
+          <span className={`ml-auto w-1.5 h-1.5 rounded-full shrink-0 ${PRESENCE_DOT[status.state] ?? "bg-[#3a342e]"}`} />
+        </div>
+        <div className="text-[10px] text-[#6b5f57] truncate">{stateLabel}</div>
+        {event && eventText && (
+          <div className="rounded-md border border-white/[0.05] bg-white/[0.02] px-2 py-1.5 space-y-1">
+            <div className="text-[9px] uppercase tracking-[0.1em] text-[#3a342e] font-semibold">{t("presence.card.latestEvent")}</div>
+            <div className="text-[10px] text-[#a89f96] leading-snug">{eventText}</div>
+            <div className="flex gap-1.5">
+              <button onClick={() => void dismissEvent()}
+                className="px-1.5 py-0.5 rounded text-[9px] font-medium text-[#6b5f57] hover:text-[#c8c0b7] hover:bg-white/[0.04] transition-colors">
+                {t("presence.button.dismiss")}
+              </button>
+              {settings.presence_allow_insert_to_chat && (
+                <button onClick={handleInsertToChat}
+                  className="px-1.5 py-0.5 rounded text-[9px] font-medium text-[#c4644a] hover:bg-[#c4644a]/10 transition-colors">
+                  {t("presence.button.toChat")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        <div className="flex gap-1.5">
+          {isQuiet ? (
+            <button onClick={() => void wake()}
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-[#c4644a]/25 text-[#c4644a] hover:bg-[#c4644a]/10 transition-colors">
+              {t("presence.button.wake")}
+            </button>
+          ) : (
+            <button onClick={() => void quiet()}
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors">
+              {t("presence.button.quiet")}
+            </button>
+          )}
+          <button onClick={() => void handleSay()} disabled={saying}
+            className="flex-1 px-2 py-1 rounded-md text-[10px] font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors disabled:opacity-40">
+            {t("presence.button.say")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 
 function Sidebar({ open, conversations, conversationsUnavailable, activeConversationId, onSelectConversation, onNewChat, view, setView, modelState }: {
@@ -4315,6 +4578,7 @@ function Sidebar({ open, conversations, conversationsUnavailable, activeConversa
             </button>
           ))}
         </div>
+        <PresenceCard setView={setView} />
         <ModelStatusWidget state={modelState} />
       </div>
     </motion.aside>

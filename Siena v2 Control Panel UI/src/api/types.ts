@@ -321,6 +321,65 @@ export interface SettingsPayload {
   // stt_language (voice input) and preferred_response_language (soft model
   // reply preference) above.
   interface_language: "en" | "ru" | string;
+  // Presence layer (0.2.1, Phase 1) — real, persisted, applied live (see
+  // presence/presence_service.py). allow_proactive_presence_messages
+  // defaults false: Presence never creates chat messages on its own unless
+  // a human explicitly opts in.
+  enable_presence: boolean;
+  allow_proactive_presence_messages: boolean;
+  presence_idle_minutes: number;
+  presence_max_messages_per_hour: number;
+  presence_quiet_hours_enabled: boolean;
+  presence_quiet_hours_start: string;
+  presence_quiet_hours_end: string;
+  presence_style: "calm" | "playful" | "minimal" | string;
+  show_presence_card: boolean;
+  // Presence Behavior Layer (0.2.1, Phase 2) — welcome-back / recent-event /
+  // insert-to-composer gates, all real and persisted like Phase 1's fields.
+  presence_show_welcome_back: boolean;
+  presence_show_recent_event: boolean;
+  presence_allow_insert_to_chat: boolean;
+  presence_min_seconds_between_ui_messages: number;
+}
+
+// The latest UI-only presence event (welcome_back / say) shown in the
+// Presence Card's "Latest event" block. `message` is the backend's canonical
+// RU line; the frontend renders the localized text via the i18n key
+// presence.event.<type>.<style>.<variant>, falling back to `message`.
+export interface PresenceRecentEvent {
+  type: "welcome_back" | "say" | string;
+  style: "calm" | "playful" | "minimal" | string;
+  variant: number;
+  message: string;
+  created_at: string;
+}
+
+// GET /api/presence/status | POST /api/presence/{ping,quiet,wake} — all
+// return this same shape (presence/presence_state.py::PresenceState).
+export type PresenceStateValue =
+  | "available" | "idle" | "listening" | "thinking" | "speaking"
+  | "quiet" | "offline" | "error";
+
+export interface PresenceStatus {
+  state: PresenceStateValue;
+  message: string;
+  last_user_activity_at: string | null;
+  last_assistant_activity_at: string | null;
+  last_presence_message_at: string | null;
+  quiet_until: string | null;
+  is_quiet_mode: boolean;
+  uptime_seconds: number | null;
+  current_activity: string | null;
+  recent_event: PresenceRecentEvent | null;
+}
+
+// POST /api/presence/say — deterministic, local, no-LLM status line (never
+// persisted as a conversation message by the backend).
+export interface PresenceSayResponse {
+  message: string | null;
+  throttled: boolean;
+  style: string;
+  variant: number | null;
 }
 
 export interface CandidateMemoryEntry {
