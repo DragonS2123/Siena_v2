@@ -349,6 +349,59 @@ export interface SettingsPayload {
   close_to_tray: boolean;
   show_tray_notifications: boolean;
   auto_start_backend_with_desktop: boolean;
+  // Computer Awareness Layer (0.2.3, Phase 1) — strictly read-only computer
+  // state (computer/). allow_active_window_title defaults false for privacy.
+  enable_computer_awareness: boolean;
+  show_computer_status_card: boolean;
+  computer_status_poll_seconds: number;
+  allow_active_window_title: boolean;
+  allow_process_list: boolean;
+  allow_disk_status: boolean;
+  allow_network_status: boolean;
+  allow_computer_context_in_chat: boolean;
+  computer_warning_cpu_percent: number;
+  computer_warning_ram_percent: number;
+  computer_warning_vram_percent: number;
+  computer_warning_disk_free_gb: number;
+}
+
+// GET /api/computer/status (computer/computer_state.py) — read-only snapshot
+// of the machine Siena runs on. Optional metrics are null when unavailable
+// or when their allow_* privacy gate is off; enabled=false means the whole
+// layer is disabled and only {enabled, status, warnings} are present.
+export interface ComputerWarningEntry {
+  code: string;
+  message: string;
+  value: number | string | null;
+}
+
+export interface ComputerStatusResponse {
+  enabled: boolean;
+  status: "ok" | "disabled" | "error" | string;
+  os_name?: string;
+  os_version?: string;
+  hostname?: string;
+  uptime_seconds?: number | null;
+  cpu_percent?: number | null;
+  ram_total_bytes?: number | null;
+  ram_used_bytes?: number | null;
+  ram_percent?: number | null;
+  gpu_name?: string | null;
+  vram_total_bytes?: number | null;
+  vram_used_bytes?: number | null;
+  vram_percent?: number | null;
+  vram_unavailable_reason?: string | null;
+  disks?: { mountpoint: string; total_gb: number; free_gb: number; percent_used: number }[] | null;
+  network_available?: boolean | null;
+  backend_status?: string;
+  ollama_status?: { connected?: boolean; error?: string };
+  tts_status?: { provider?: string; status?: string };
+  stt_status?: { provider?: string; available?: boolean; reason?: string | null };
+  active_window_title?: string | null;
+  important_processes?: { name: string; role: string; pid: number; ram_mb: number | null }[] | null;
+  warnings: ComputerWarningEntry[];
+  collected_at?: string;
+  error?: string;
 }
 
 // The latest UI-only presence event (welcome_back / say) shown in the

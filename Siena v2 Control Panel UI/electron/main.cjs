@@ -308,6 +308,10 @@ app.whenReady().then(() => {
       closeWindow: () => mainWindow?.close(),
       minimizeWindow: () => mainWindow?.minimize(),
       quit: () => app.quit(),
+      // Smoke runs drive the UI while the window is occluded by the user's
+      // own windows — Chromium freezes rAF for occluded pages, which stalls
+      // framer-motion view transitions and makes assertions flaky.
+      setBackgroundThrottling: (value) => mainWindow?.webContents.setBackgroundThrottling(value),
     };
   }
 

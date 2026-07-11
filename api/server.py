@@ -52,6 +52,7 @@ from ocr.glm_ocr_service import (
     clean_ocr_text,
     ocr_quality,
 )
+from computer import ComputerService, ComputerSettings, build_computer_context, wants_computer_context
 from presence import PresenceService, PresenceSettings
 from presence.presence_service import PresenceTransition
 from storage.conversation_store import ConversationStore
@@ -271,6 +272,21 @@ class SettingsUpdate(BaseModel):
     close_to_tray: bool | None = None
     show_tray_notifications: bool | None = None
     auto_start_backend_with_desktop: bool | None = None
+    # Computer Awareness Layer (0.2.3, Phase 1) — read-only computer state.
+    # allow_active_window_title defaults False (window titles can carry
+    # personal information).
+    enable_computer_awareness: bool | None = None
+    show_computer_status_card: bool | None = None
+    computer_status_poll_seconds: int | None = None
+    allow_active_window_title: bool | None = None
+    allow_process_list: bool | None = None
+    allow_disk_status: bool | None = None
+    allow_network_status: bool | None = None
+    allow_computer_context_in_chat: bool | None = None
+    computer_warning_cpu_percent: int | None = None
+    computer_warning_ram_percent: int | None = None
+    computer_warning_vram_percent: int | None = None
+    computer_warning_disk_free_gb: int | None = None
 
 
 class TraceHub:
@@ -549,6 +565,30 @@ if "show_tray_notifications" in _persisted_settings:
     config.SHOW_TRAY_NOTIFICATIONS = _persisted_settings["show_tray_notifications"]
 if "auto_start_backend_with_desktop" in _persisted_settings:
     config.AUTO_START_BACKEND_WITH_DESKTOP = _persisted_settings["auto_start_backend_with_desktop"]
+if "enable_computer_awareness" in _persisted_settings:
+    config.ENABLE_COMPUTER_AWARENESS = _persisted_settings["enable_computer_awareness"]
+if "show_computer_status_card" in _persisted_settings:
+    config.SHOW_COMPUTER_STATUS_CARD = _persisted_settings["show_computer_status_card"]
+if "computer_status_poll_seconds" in _persisted_settings:
+    config.COMPUTER_STATUS_POLL_SECONDS = _persisted_settings["computer_status_poll_seconds"]
+if "allow_active_window_title" in _persisted_settings:
+    config.ALLOW_ACTIVE_WINDOW_TITLE = _persisted_settings["allow_active_window_title"]
+if "allow_process_list" in _persisted_settings:
+    config.ALLOW_PROCESS_LIST = _persisted_settings["allow_process_list"]
+if "allow_disk_status" in _persisted_settings:
+    config.ALLOW_DISK_STATUS = _persisted_settings["allow_disk_status"]
+if "allow_network_status" in _persisted_settings:
+    config.ALLOW_NETWORK_STATUS = _persisted_settings["allow_network_status"]
+if "allow_computer_context_in_chat" in _persisted_settings:
+    config.ALLOW_COMPUTER_CONTEXT_IN_CHAT = _persisted_settings["allow_computer_context_in_chat"]
+if "computer_warning_cpu_percent" in _persisted_settings:
+    config.COMPUTER_WARNING_CPU_PERCENT = _persisted_settings["computer_warning_cpu_percent"]
+if "computer_warning_ram_percent" in _persisted_settings:
+    config.COMPUTER_WARNING_RAM_PERCENT = _persisted_settings["computer_warning_ram_percent"]
+if "computer_warning_vram_percent" in _persisted_settings:
+    config.COMPUTER_WARNING_VRAM_PERCENT = _persisted_settings["computer_warning_vram_percent"]
+if "computer_warning_disk_free_gb" in _persisted_settings:
+    config.COMPUTER_WARNING_DISK_FREE_GB = _persisted_settings["computer_warning_disk_free_gb"]
 
 base_logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL)
 if _settings_load_error:
@@ -607,6 +647,103 @@ nucleares_client = NuclearesBridgeClient(snapshot_path=config.BASE_DIR / "storag
 # restart like _active_chat_model above. See presence/presence_service.py
 # for why this holds no background threads/timers.
 presence_service = PresenceService()
+
+
+def _computer_tts_status() -> dict[str, Any]:
+    """TTS runtime status for the Computer Awareness layer. For the
+    qwen3_tts_ggml_vulkan provider "online" means the external
+    tts-server.exe actually answers on its port (the meaningful signal —
+    voice_service.tts_available is nearly always true because the Silero
+    fallback exists); other providers report their own is_available()."""
+    provider_name = config.TTS_PROVIDER
+    if isinstance(voice_service.tts, QwenTTSGgmlVulkanProvider):
+        try:
+            port = int(config.QWEN_TTS_SERVER_URL.rsplit(":", 1)[-1])
+        except ValueError:
+            port = 8080
+        import socket as _socket
+
+        try:
+            with _socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                reachable = True
+        except OSError:
+            reachable = False
+        return {
+            "provider": provider_name,
+            "status": "online" if reachable else "offline",
+            "fallback_provider": "silero",
+        }
+    try:
+        available = voice_service.tts.is_available()
+    except Exception:
+        available = False
+    return {"provider": provider_name, "status": "online" if available else "offline"}
+
+
+def _computer_stt_status() -> dict[str, Any]:
+    try:
+        available = whisper_cpp_stt_service.is_available()
+        reason = None if available else whisper_cpp_stt_service.unavailable_reason()
+    except Exception as exc:
+        available, reason = False, str(exc)
+    return {"provider": config.STT_PROVIDER, "available": available, "reason": reason}
+
+
+# Computer Awareness Layer (0.2.3, Phase 1, computer/) — strictly read-only,
+# collected per request, no background polling. Status providers are the
+# server's own existing helpers, injected so computer/ never imports this
+# module (see computer/computer_service.py).
+computer_service = ComputerService(
+    ollama_status_provider=lambda: _ollama_status(),
+    tts_status_provider=_computer_tts_status,
+    stt_status_provider=_computer_stt_status,
+)
+
+
+def _computer_settings() -> ComputerSettings:
+    return ComputerSettings(
+        enabled=config.ENABLE_COMPUTER_AWARENESS,
+        allow_active_window_title=config.ALLOW_ACTIVE_WINDOW_TITLE,
+        allow_process_list=config.ALLOW_PROCESS_LIST,
+        allow_disk_status=config.ALLOW_DISK_STATUS,
+        allow_network_status=config.ALLOW_NETWORK_STATUS,
+        warning_cpu_percent=config.COMPUTER_WARNING_CPU_PERCENT,
+        warning_ram_percent=config.COMPUTER_WARNING_RAM_PERCENT,
+        warning_vram_percent=config.COMPUTER_WARNING_VRAM_PERCENT,
+        warning_disk_free_gb=config.COMPUTER_WARNING_DISK_FREE_GB,
+    )
+
+
+_COMPUTER_DISABLED_PAYLOAD = {"enabled": False, "status": "disabled", "warnings": []}
+
+
+async def _collect_computer_state() -> "ComputerState | None":
+    """Shared collection for the three /api/computer/* endpoints and the
+    chat context injection. Returns None (and logs computer_status_failed)
+    on an unexpected collection crash — callers answer with a safe error
+    payload instead of a 500. Warning-change detection fires
+    computer_warning_detected once per new code, not once per poll."""
+    try:
+        state = await asyncio.to_thread(computer_service.collect, _computer_settings())
+    except Exception as exc:  # noqa: BLE001 — collection must never 500 the endpoint
+        base_logger.error(
+            "computer_status_failed",
+            console_message=f"[COMPUTER] status collection failed: {exc}",
+            error=str(exc),
+        )
+        return None
+
+    new_codes = computer_service.warnings_changed(state.warnings)
+    if new_codes:
+        base_logger.event(
+            "computer_status_collected",
+            warning_codes=[w.code for w in state.warnings],
+            console_message=f"[COMPUTER] warnings changed: {', '.join(new_codes)}",
+        )
+        for code in new_codes:
+            base_logger.event("computer_warning_detected", code=code)
+            await trace_hub.broadcast({"event": "computer_warning_detected", "code": code})
+    return state
 
 
 def _presence_settings() -> PresenceSettings:
@@ -927,6 +1064,18 @@ def _settings_payload() -> dict[str, Any]:
         "close_to_tray": config.CLOSE_TO_TRAY,
         "show_tray_notifications": config.SHOW_TRAY_NOTIFICATIONS,
         "auto_start_backend_with_desktop": config.AUTO_START_BACKEND_WITH_DESKTOP,
+        "enable_computer_awareness": config.ENABLE_COMPUTER_AWARENESS,
+        "show_computer_status_card": config.SHOW_COMPUTER_STATUS_CARD,
+        "computer_status_poll_seconds": config.COMPUTER_STATUS_POLL_SECONDS,
+        "allow_active_window_title": config.ALLOW_ACTIVE_WINDOW_TITLE,
+        "allow_process_list": config.ALLOW_PROCESS_LIST,
+        "allow_disk_status": config.ALLOW_DISK_STATUS,
+        "allow_network_status": config.ALLOW_NETWORK_STATUS,
+        "allow_computer_context_in_chat": config.ALLOW_COMPUTER_CONTEXT_IN_CHAT,
+        "computer_warning_cpu_percent": config.COMPUTER_WARNING_CPU_PERCENT,
+        "computer_warning_ram_percent": config.COMPUTER_WARNING_RAM_PERCENT,
+        "computer_warning_vram_percent": config.COMPUTER_WARNING_VRAM_PERCENT,
+        "computer_warning_disk_free_gb": config.COMPUTER_WARNING_DISK_FREE_GB,
     }
 
 
@@ -1758,12 +1907,43 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
                     console_message=f"[NUCLEARES] context skipped: {nucleares_skip_reason}",
                 )
 
+        # Computer Awareness (0.2.3, Phase 1) — hidden [COMPUTER_CONTEXT]
+        # block, injected ONLY when the message explicitly asks about the
+        # computer / Siena's runtime (computer/computer_context.py), never
+        # on every request. Model-visible only — never persisted into the
+        # user message or conversation history (same discipline as the
+        # Nucleares context above).
+        computer_context = ""
+        if wants_computer_context(text):
+            if not config.ENABLE_COMPUTER_AWARENESS:
+                logger.event(
+                    "computer_awareness_disabled",
+                    console_message="[COMPUTER] context requested by message but the layer is disabled",
+                )
+            elif not config.ALLOW_COMPUTER_CONTEXT_IN_CHAT:
+                logger.event(
+                    "computer_context_skipped",
+                    reason="allow_computer_context_in_chat=false",
+                    console_message="[COMPUTER] context skipped: disabled by setting",
+                )
+            else:
+                logger.event("computer_status_requested", source="chat_context")
+                computer_state = await _collect_computer_state()
+                if computer_state is not None:
+                    computer_context = build_computer_context(computer_state, _computer_settings())
+                    logger.event(
+                        "computer_context_injected",
+                        chars=len(computer_context),
+                        warning_codes=[w.code for w in computer_state.warnings],
+                        console_message=f"[COMPUTER] context added to prompt ({len(computer_context)} chars)",
+                    )
+
         language_preference_note = _LANGUAGE_PREFERENCE_NOTES.get(config.PREFERRED_RESPONSE_LANGUAGE)
         combined_context = "\n\n".join(
             b for b in (
                 attachment_context, image_ocr_context, image_vision_context,
                 vision_unavailable_note, memory_intent_note, research_intent_note,
-                nucleares_context, language_preference_note,
+                nucleares_context, computer_context, language_preference_note,
             ) if b
         )
         model_input = f"{text}\n\n{combined_context}" if combined_context and text else (combined_context or text)
@@ -2181,6 +2361,13 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         errors.append("presence_quiet_hours_end must be in HH:MM 24h format")
     if "presence_min_seconds_between_ui_messages" in changes and changes["presence_min_seconds_between_ui_messages"] < 0:
         errors.append("presence_min_seconds_between_ui_messages must be >= 0")
+    if "computer_status_poll_seconds" in changes and not (2 <= changes["computer_status_poll_seconds"] <= 3600):
+        errors.append("computer_status_poll_seconds must be between 2 and 3600")
+    for _pct_field in ("computer_warning_cpu_percent", "computer_warning_ram_percent", "computer_warning_vram_percent"):
+        if _pct_field in changes and not (1 <= changes[_pct_field] <= 100):
+            errors.append(f"{_pct_field} must be between 1 and 100")
+    if "computer_warning_disk_free_gb" in changes and changes["computer_warning_disk_free_gb"] < 1:
+        errors.append("computer_warning_disk_free_gb must be >= 1")
     if "ollama_host" in changes and not changes["ollama_host"].startswith(("http://", "https://")):
         errors.append("ollama_host РґРѕР»Р¶РµРЅ РЅР°С‡РёРЅР°С‚СЊСЃСЏ СЃ http:// РёР»Рё https://")
 
@@ -2314,6 +2501,30 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         config.SHOW_TRAY_NOTIFICATIONS = changes["show_tray_notifications"]
     if "auto_start_backend_with_desktop" in changes:
         config.AUTO_START_BACKEND_WITH_DESKTOP = changes["auto_start_backend_with_desktop"]
+    if "enable_computer_awareness" in changes:
+        config.ENABLE_COMPUTER_AWARENESS = changes["enable_computer_awareness"]
+    if "show_computer_status_card" in changes:
+        config.SHOW_COMPUTER_STATUS_CARD = changes["show_computer_status_card"]
+    if "computer_status_poll_seconds" in changes:
+        config.COMPUTER_STATUS_POLL_SECONDS = changes["computer_status_poll_seconds"]
+    if "allow_active_window_title" in changes:
+        config.ALLOW_ACTIVE_WINDOW_TITLE = changes["allow_active_window_title"]
+    if "allow_process_list" in changes:
+        config.ALLOW_PROCESS_LIST = changes["allow_process_list"]
+    if "allow_disk_status" in changes:
+        config.ALLOW_DISK_STATUS = changes["allow_disk_status"]
+    if "allow_network_status" in changes:
+        config.ALLOW_NETWORK_STATUS = changes["allow_network_status"]
+    if "allow_computer_context_in_chat" in changes:
+        config.ALLOW_COMPUTER_CONTEXT_IN_CHAT = changes["allow_computer_context_in_chat"]
+    if "computer_warning_cpu_percent" in changes:
+        config.COMPUTER_WARNING_CPU_PERCENT = changes["computer_warning_cpu_percent"]
+    if "computer_warning_ram_percent" in changes:
+        config.COMPUTER_WARNING_RAM_PERCENT = changes["computer_warning_ram_percent"]
+    if "computer_warning_vram_percent" in changes:
+        config.COMPUTER_WARNING_VRAM_PERCENT = changes["computer_warning_vram_percent"]
+    if "computer_warning_disk_free_gb" in changes:
+        config.COMPUTER_WARNING_DISK_FREE_GB = changes["computer_warning_disk_free_gb"]
 
     client_affecting = {"primary_model", "ollama_host", "request_timeout_seconds", "num_ctx", "num_predict"}
     if client_affecting & changes.keys():
@@ -2754,6 +2965,50 @@ async def presence_events(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any
     never needs a second polling loop just for presence history."""
     entries = [e for e in _read_recent_jsonl(500) if str(e.get("event", "")).startswith("presence_")]
     return {"entries": entries[-limit:]}
+
+
+# ─── Computer Awareness Layer (0.2.3, Phase 1) ─────────────────────────────
+# Strictly READ-ONLY (see computer/__init__.py): three GET endpoints, no
+# command execution of any kind. Collected per request — the frontend polls
+# GET /api/computer/status every computer_status_poll_seconds (default 10s);
+# the backend never polls itself. Successful polls are deliberately NOT
+# logged/broadcast per request (that would flood trace at 10s cadence) —
+# only warning-set CHANGES and failures produce events
+# (see _collect_computer_state above).
+
+
+@app.get("/api/computer/status")
+async def computer_status() -> dict[str, Any]:
+    if not config.ENABLE_COMPUTER_AWARENESS:
+        return dict(_COMPUTER_DISABLED_PAYLOAD)
+    state = await _collect_computer_state()
+    if state is None:
+        return {"enabled": True, "status": "error", "error": "status collection failed", "warnings": []}
+    return {"enabled": True, "status": "ok", **state.to_dict()}
+
+
+@app.get("/api/computer/summary")
+async def computer_summary() -> dict[str, Any]:
+    base_logger.event("computer_summary_requested")
+    if not config.ENABLE_COMPUTER_AWARENESS:
+        base_logger.event("computer_awareness_disabled", endpoint="summary")
+        return {**_COMPUTER_DISABLED_PAYLOAD, "summary": "Сбор состояния выключен", "code": "disabled"}
+    state = await _collect_computer_state()
+    if state is None:
+        return {"enabled": True, "summary": "Не удалось собрать состояние компьютера", "code": "metrics_unavailable", "warning_count": 0}
+    return {"enabled": True, **ComputerService.summarize(state)}
+
+
+@app.get("/api/computer/warnings")
+async def computer_warnings() -> dict[str, Any]:
+    base_logger.event("computer_warnings_requested")
+    if not config.ENABLE_COMPUTER_AWARENESS:
+        base_logger.event("computer_awareness_disabled", endpoint="warnings")
+        return dict(_COMPUTER_DISABLED_PAYLOAD)
+    state = await _collect_computer_state()
+    if state is None:
+        return {"enabled": True, "status": "error", "warnings": [{"code": "metrics_unavailable", "message": "Метрики недоступны", "value": None}]}
+    return {"enabled": True, "status": "ok", "warnings": [w.to_dict() for w in state.warnings]}
 
 
 # Tool models eligible for manual unload — mirrors config.MODEL_REGISTRY's

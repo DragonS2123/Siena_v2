@@ -9,6 +9,7 @@ import type {
   ActiveChatModelResponse,
   ChatAttachmentPayload,
   ChatResponse,
+  ComputerStatusResponse,
   ConversationDetail,
   ConversationsListResponse,
   InsightDeferResponse,
@@ -313,6 +314,10 @@ export const sienaClient = {
       method: "POST",
       body: JSON.stringify({ activity, source: "frontend" }),
     }).catch(() => undefined),
+
+  // Computer Awareness Layer (0.2.3, Phase 1) — read-only computer state,
+  // polled by useComputerStatus.ts (interval from computer_status_poll_seconds).
+  getComputerStatus: () => request<ComputerStatusResponse>("/api/computer/status"),
 
   dismissPresenceEvent: () =>
     request<PresenceStatus & { dismissed: boolean }>("/api/presence/event/dismiss", { method: "POST" }),

@@ -312,6 +312,29 @@ CLOSE_TO_TRAY = True
 SHOW_TRAY_NOTIFICATIONS = False
 AUTO_START_BACKEND_WITH_DESKTOP = False
 
+# --- Computer Awareness Layer (0.2.3, Phase 1) --- строго READ-ONLY слой
+# понимания компьютера (computer/): CPU/RAM/VRAM/диски/сеть + статусы
+# собственного runtime Siena (backend/Ollama/TTS/STT). Никакого выполнения
+# команд, clipboard, скриншотов, webcam или управления вводом — см.
+# computer/__init__.py. Состояние собирается по запросу (frontend polling),
+# backend сам себя не опрашивает. ALLOW_ACTIVE_WINDOW_TITLE по умолчанию
+# False: заголовок активного окна может содержать личную информацию.
+# Computer context добавляется в chat prompt ТОЛЬКО когда пользователь явно
+# спрашивает про компьютер/runtime (computer/computer_context.py), никогда
+# в каждый запрос.
+ENABLE_COMPUTER_AWARENESS = True
+SHOW_COMPUTER_STATUS_CARD = True
+COMPUTER_STATUS_POLL_SECONDS = 10
+ALLOW_ACTIVE_WINDOW_TITLE = False
+ALLOW_PROCESS_LIST = True
+ALLOW_DISK_STATUS = True
+ALLOW_NETWORK_STATUS = True
+ALLOW_COMPUTER_CONTEXT_IN_CHAT = True
+COMPUTER_WARNING_CPU_PERCENT = 90
+COMPUTER_WARNING_RAM_PERCENT = 85
+COMPUTER_WARNING_VRAM_PERCENT = 90
+COMPUTER_WARNING_DISK_FREE_GB = 10
+
 # --- Chat input ---
 CHAT_INPUT_MAX_CHARS = 4000  # обеспечивается и сервером (/api/chat), и UI-счётчиком
 

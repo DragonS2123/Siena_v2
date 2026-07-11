@@ -202,6 +202,19 @@ def test_persistable_fields_matches_expected_set():
         "close_to_tray",
         "show_tray_notifications",
         "auto_start_backend_with_desktop",
+        # Computer Awareness Layer (0.2.3, Phase 1) — computer/.
+        "enable_computer_awareness",
+        "show_computer_status_card",
+        "computer_status_poll_seconds",
+        "allow_active_window_title",
+        "allow_process_list",
+        "allow_disk_status",
+        "allow_network_status",
+        "allow_computer_context_in_chat",
+        "computer_warning_cpu_percent",
+        "computer_warning_ram_percent",
+        "computer_warning_vram_percent",
+        "computer_warning_disk_free_gb",
     }
 
 

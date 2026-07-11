@@ -12,7 +12,7 @@ import {
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson, Languages,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Waves, Headphones, Download,
-  Sparkles, Monitor,
+  Sparkles, Monitor, Gauge,
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
@@ -27,6 +27,7 @@ import { useResourcesStatus } from "../hooks/useResourcesStatus";
 import { RuntimeStatusProvider, useRuntimeStatus } from "../hooks/useRuntimeStatus";
 import { UiPreferencesProvider, useUiPreferences } from "../hooks/useUiPreferences";
 import type { StartupPage } from "../hooks/useUiPreferences";
+import { useComputerStatus } from "../hooks/useComputerStatus";
 import { usePresence } from "../hooks/usePresence";
 import { useSettings } from "../hooks/useSettings";
 import { useSpeech, type SpeechState, type UseSpeechResult } from "../hooks/useSpeech";
@@ -51,7 +52,7 @@ type MainView =
 type ModelState = "idle" | "thinking" | "generating" | "tool";
 type SettingsSection =
   | "appearance" | "model" | "startup" | "tools"
-  | "code" | "voice" | "language" | "presence" | "desktop" | "developer";
+  | "code" | "voice" | "language" | "presence" | "desktop" | "computer" | "developer";
 type AttachmentType = "image" | "text" | "code" | "markdown" | "json" | "log";
 type VoiceState =
   | "idle" | "requesting-permission" | "listening" | "speaking-user" | "transcribing"
@@ -3537,6 +3538,7 @@ const SETTINGS_NAV: { id: SettingsSection; labelKey: string; icon: React.Element
   { id: "language", labelKey: "settings.nav.language", icon: Globe },
   { id: "presence", labelKey: "settings.nav.presence", icon: Sparkles },
   { id: "desktop", labelKey: "settings.nav.desktop", icon: Monitor },
+  { id: "computer", labelKey: "settings.nav.computer", icon: Gauge },
   { id: "developer", labelKey: "settings.nav.developer", icon: Terminal },
 ];
 
@@ -3571,6 +3573,7 @@ function SettingsView() {
             {active === "language" && <LanguageSettings />}
             {active === "presence" && <PresenceSettings />}
             {active === "desktop" && <DesktopSettings />}
+            {active === "computer" && <ComputerSettings />}
             {active === "developer" && <DeveloperSettings />}
           </motion.div>
         </AnimatePresence>
@@ -4364,6 +4367,76 @@ function DesktopSettings() {
   </>);
 }
 
+// Computer Awareness Layer (0.2.3, Phase 1) — all real, persisted, applied
+// live (config.* is read fresh on every /api/computer/* request and every
+// chat turn; the poll interval reaches useComputerStatus via the same
+// settings refresh). allow_active_window_title defaults OFF for privacy.
+function ComputerSettings() {
+  const { settings, loading, saving, saveError, save } = useSettings();
+  const { t } = useUiPreferences();
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  const persist = async (patch: Partial<SettingsPayload>) => {
+    setSaveStatus(null);
+    const ok = await save(patch);
+    setSaveStatus(ok ? t("common.saved") : null);
+  };
+
+  if (!settings) {
+    return <div className="text-xs text-[#6b5f57]">{t("common.loading")}</div>;
+  }
+
+  const numberRow = (labelKey: string, subKey: string | null, value: number, min: number, max: number, field: keyof SettingsPayload) => (
+    <div className="flex items-center justify-between">
+      <div>
+        <span className="text-xs text-[#a89f96]">{t(labelKey)}</span>
+        {subKey && <p className="text-[10px] text-[#4b4540] mt-px">{t(subKey)}</p>}
+      </div>
+      <input type="number" min={min} max={max} value={value} disabled={loading || saving}
+        onChange={(e) => { const v = Number(e.target.value); if (v >= min && v <= max) void persist({ [field]: v } as Partial<SettingsPayload>); }}
+        className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-20 text-right" />
+    </div>
+  );
+
+  return (<>
+    <SectionHeader title={t("settings.computer.title")} desc={t("settings.computer.desc")} action={<Badge label={t("common.badge.persisted")} variant="ok" />} />
+    <SettingsCard title={t("settings.computer.general")}>
+      <Toggle label={t("settings.computer.enable")} sub={t("settings.computer.enableSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.enable_computer_awareness} disabled={loading || saving}
+        onChange={(v) => void persist({ enable_computer_awareness: v })} />
+      <Toggle label={t("settings.computer.showCard")} sub={t("settings.computer.showCardSub")}
+        checked={settings.show_computer_status_card} disabled={loading || saving}
+        onChange={(v) => void persist({ show_computer_status_card: v })} />
+      {numberRow("settings.computer.pollSeconds", "settings.computer.pollSecondsSub", settings.computer_status_poll_seconds, 2, 3600, "computer_status_poll_seconds")}
+      <SettingsSaveStatus saving={saving} saveError={saveError} saveStatus={saveStatus} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.computer.privacy")}>
+      <Toggle label={t("settings.computer.allowWindowTitle")} sub={t("settings.computer.allowWindowTitleSub")} badge={<Badge label={t("settings.computer.privacyBadge")} variant="warn" />}
+        checked={settings.allow_active_window_title} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_active_window_title: v })} />
+      <Toggle label={t("settings.computer.allowProcessList")} sub={t("settings.computer.allowProcessListSub")}
+        checked={settings.allow_process_list} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_process_list: v })} />
+      <Toggle label={t("settings.computer.allowDisks")} sub={t("settings.computer.allowDisksSub")}
+        checked={settings.allow_disk_status} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_disk_status: v })} />
+      <Toggle label={t("settings.computer.allowNetwork")} sub={t("settings.computer.allowNetworkSub")}
+        checked={settings.allow_network_status} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_network_status: v })} />
+      <Toggle label={t("settings.computer.allowChatContext")} sub={t("settings.computer.allowChatContextSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings.allow_computer_context_in_chat} disabled={loading || saving}
+        onChange={(v) => void persist({ allow_computer_context_in_chat: v })} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.computer.thresholds")}>
+      {numberRow("settings.computer.cpuWarn", null, settings.computer_warning_cpu_percent, 1, 100, "computer_warning_cpu_percent")}
+      {numberRow("settings.computer.ramWarn", null, settings.computer_warning_ram_percent, 1, 100, "computer_warning_ram_percent")}
+      {numberRow("settings.computer.vramWarn", null, settings.computer_warning_vram_percent, 1, 100, "computer_warning_vram_percent")}
+      {numberRow("settings.computer.diskWarn", "settings.computer.diskWarnSub", settings.computer_warning_disk_free_gb, 1, 10000, "computer_warning_disk_free_gb")}
+    </SettingsCard>
+    <LocalOnlyNotice label={t("settings.computer.readOnlyNote")} />
+  </>);
+}
+
 function DeveloperSettings() {
   const { settings, loading, saving, error, saveError, save } = useSettings();
   const { t } = useUiPreferences();
@@ -4584,6 +4657,90 @@ function PresenceCard({ setView }: { setView: (v: MainView) => void }) {
   );
 }
 
+// ─── Computer status card (0.2.3, Phase 1) ─────────────────────────────────
+// Read-only view of the machine Siena runs on — CPU/RAM (+VRAM when the
+// method supports it), her own runtime services, and threshold warnings.
+// Gated on enable_computer_awareness + show_computer_status_card (live via
+// SETTINGS_UPDATED_EVENT refresh, same as PresenceCard) AND on the
+// backend-reported enabled flag; renders nothing when off or when the
+// backend is unreachable (ModelStatusWidget already shows backend-offline).
+
+function ComputerStatusCard() {
+  const { settings } = useSettings();
+  const { t } = useUiPreferences();
+  const cardEnabled = settings?.enable_computer_awareness === true && settings?.show_computer_status_card === true;
+  const { status, error, disabled } = useComputerStatus(settings?.computer_status_poll_seconds, cardEnabled);
+  const [expanded, setExpanded] = useState(false);
+
+  if (!cardEnabled || disabled || !status || status.status !== "ok" || error) return null;
+
+  const warnings = status.warnings ?? [];
+  const dotClass = warnings.length === 0 ? "bg-green-400" : "bg-amber-400";
+  const warningText = (code: string, fallback: string) => {
+    const key = `computer.warning.${code}`;
+    const localized = t(key);
+    return localized !== key ? localized : fallback;
+  };
+
+  const serviceDot = (ok: boolean | undefined) => (
+    <span className={`w-1.5 h-1.5 rounded-full inline-block ${ok ? "bg-green-400" : "bg-red-400"}`} />
+  );
+
+  return (
+    <div className="px-3 pt-2">
+      <div className="rounded-lg border border-white/[0.06] px-2.5 py-2 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <Gauge size={12} className="text-[#7dd3fc] shrink-0" />
+          <span className="text-[11px] font-medium text-[#c8c0b7] truncate">{t("computer.card.title")}</span>
+          <span className={`ml-auto w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`} />
+        </div>
+        <div className="text-[10px] text-[#6b5f57]">
+          CPU {status.cpu_percent ?? "?"}% · RAM {status.ram_percent ?? "?"}%
+          {status.vram_percent != null && <> · VRAM {status.vram_percent}%</>}
+        </div>
+        <div className="flex items-center gap-2 text-[9px] text-[#6b5f57]">
+          <span className="flex items-center gap-1">{serviceDot(true)} Backend</span>
+          <span className="flex items-center gap-1">{serviceDot(status.ollama_status?.connected)} Ollama</span>
+          <span className="flex items-center gap-1">{serviceDot(status.tts_status?.status === "online")} TTS</span>
+          <span className="flex items-center gap-1">{serviceDot(status.stt_status?.available)} STT</span>
+        </div>
+        {warnings.length > 0 && (
+          <div className="text-[10px] text-amber-400 leading-snug">
+            {warningText(warnings[0].code, warnings[0].message)}
+            {warnings.length > 1 && <span className="text-[#6b5f57]"> (+{warnings.length - 1})</span>}
+          </div>
+        )}
+        <button onClick={() => setExpanded(v => !v)}
+          className="w-full px-2 py-1 rounded-md text-[10px] font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors">
+          {expanded ? t("computer.card.hideDetails") : t("computer.card.details")}
+        </button>
+        {expanded && (
+          <div className="space-y-1 text-[10px] text-[#6b5f57] border-t border-white/[0.05] pt-1.5">
+            {status.vram_percent == null && status.vram_unavailable_reason && (
+              <div>VRAM: {t("computer.vramUnavailable")}</div>
+            )}
+            {status.disks && status.disks.length > 0 && (
+              <div>{t("computer.disks")}: {status.disks.map(d => `${d.mountpoint} ${d.free_gb}GB`).join(" · ")}</div>
+            )}
+            {status.network_available != null && (
+              <div>{t("computer.network")}: {status.network_available ? "✓" : "✗"}</div>
+            )}
+            {status.important_processes && status.important_processes.length > 0 && (
+              <div>
+                {status.important_processes.filter(p => p.ram_mb).map(p => `${p.name} ${p.ram_mb}MB`).join(" · ")}
+              </div>
+            )}
+            {status.active_window_title && <div className="truncate">{status.active_window_title}</div>}
+            {warnings.slice(1).map((w, i) => (
+              <div key={i} className="text-amber-400">{warningText(w.code, w.message)}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Sidebar ───────────────────────────────────────────────────────────────────
 
 function Sidebar({ open, conversations, conversationsUnavailable, activeConversationId, onSelectConversation, onNewChat, view, setView, modelState }: {
@@ -4649,6 +4806,7 @@ function Sidebar({ open, conversations, conversationsUnavailable, activeConversa
           ))}
         </div>
         <PresenceCard setView={setView} />
+        <ComputerStatusCard />
         <ModelStatusWidget state={modelState} />
       </div>
     </motion.aside>

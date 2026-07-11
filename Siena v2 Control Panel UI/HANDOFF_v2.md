@@ -1407,6 +1407,50 @@ AMD VRAM metrics, Nucleares read-only) are unchanged — see
 
 ---
 
+## 11. Computer Awareness Layer (0.2.3, Phase 1 — read-only)
+
+A strictly READ-ONLY view of the machine Siena runs on (`computer/` package:
+`computer_state.py` / `computer_service.py` / `computer_context.py`), so she
+can honestly answer "что сейчас с компьютером?" / "почему не работает
+голос?" from real data instead of guessing.
+
+- **Endpoints (GET-only):** `/api/computer/status` (full snapshot, polled by
+  the frontend every `computer_status_poll_seconds`, default 10s),
+  `/api/computer/summary` (one deterministic human line),
+  `/api/computer/warnings` (threshold/offline warnings only). With
+  `enable_computer_awareness=false` all three return a safe
+  `{enabled: false, status: "disabled", warnings: []}`-style payload.
+- **Reuses, not duplicates:** CPU/RAM/VRAM come from
+  `core/system_metrics.py` (including its honest AMD-VRAM-unavailable
+  stance); Ollama/TTS/STT statuses are the server's own existing helpers
+  injected as callables, so `computer/` never imports `api.server`.
+- **No command execution, no clipboard, no screenshots, no webcam, no input
+  control, no repair actions** — enforced structurally
+  (`tests/test_computer_awareness.py` asserts GET-only routes and no
+  subprocess usage in the package). No background threads/timers: the
+  backend collects per request only.
+- **Privacy gates:** `allow_active_window_title` (default **false** — titles
+  can carry personal info), `allow_process_list` (curated Siena-runtime
+  allowlist only, never a full system dump), `allow_disk_status`,
+  `allow_network_status` (local NIC-up check, sends nothing).
+- **Chat integration:** a compact hidden `[COMPUTER_CONTEXT]...[/COMPUTER_CONTEXT]`
+  block is injected ONLY when the message explicitly asks about the
+  computer/Siena's runtime (`computer_context.py` regex intent — "привет" /
+  translation / code requests never match), gated additionally by
+  `allow_computer_context_in_chat`. Model-visible only, never persisted into
+  the user message or conversation history; the block itself tells the model
+  it can only read and explain, not act.
+- **UI:** compact "Компьютер Siena" / "Siena's Computer" card in the sidebar
+  (CPU/RAM/VRAM line, Backend/Ollama/TTS/STT dots, first warning, Details
+  expander) + Settings > Computer section with all 12 real settings.
+- **Trace anti-spam:** successful polls log nothing; only warning-set
+  CHANGES (`computer_warning_detected` per new code) and collection failures
+  (`computer_status_failed`) produce events.
+
+Full limitation list: `docs/KNOWN_LIMITATIONS_0.2.3.md`.
+
+---
+
 ## Summary of this document's own provenance
 
 Only read, nothing changed: `api/server.py`, `config.py`,
