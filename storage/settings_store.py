@@ -109,6 +109,10 @@ PERSISTABLE_FIELDS = (
     "computer_warning_ram_percent",
     "computer_warning_vram_percent",
     "computer_warning_disk_free_gb",
+    # Siena Remote Presence (0.2.3, remote_gateway/) — ONLY the enable flag.
+    # The gateway token deliberately never touches this file: it lives in a
+    # Windows-DPAPI-encrypted store (remote_gateway/credentials.py).
+    "remote_gateway_enabled",
 )
 
 

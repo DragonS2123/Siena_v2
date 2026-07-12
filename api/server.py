@@ -11,6 +11,7 @@ import time
 import uuid
 import wave
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,8 @@ from ocr.glm_ocr_service import (
 from computer import ComputerService, ComputerSettings, build_computer_context, wants_computer_context
 from presence import PresenceService, PresenceSettings
 from presence.presence_service import PresenceTransition
+from remote_gateway.credentials import CredentialsStore as GatewayCredentialsStore
+from remote_gateway.service import RemoteGatewayService
 from storage.conversation_store import ConversationStore
 from storage.settings_store import PERSISTABLE_FIELDS, SettingsStore
 from tools.candidate_memory_tools import promote_candidate
@@ -275,6 +278,10 @@ class SettingsUpdate(BaseModel):
     # Computer Awareness Layer (0.2.3, Phase 1) — read-only computer state.
     # allow_active_window_title defaults False (window titles can carry
     # personal information).
+    # Siena Remote Presence (0.2.3, remote_gateway/) — only the on/off flag
+    # lives in settings. The gateway token is NEVER accepted or returned by
+    # any HTTP API — configuration is local-CLI-only (remote_gateway/manage.py).
+    remote_gateway_enabled: bool | None = None
     enable_computer_awareness: bool | None = None
     show_computer_status_card: bool | None = None
     computer_status_poll_seconds: int | None = None
@@ -438,7 +445,19 @@ class SessionStore:
         self._current_session = Session(self._system_prompt)
 
 
-app = FastAPI(title="Siena v2 Control Panel API")
+# Siena Remote Presence (0.2.3, remote_gateway/) — the Home Gateway Agent
+# starts with the backend and stops with it, so "Siena_v2 is running" IS
+# "Home Gateway online" on the Android side. Startup never blocks on it
+# (start_if_enabled only spawns a background task) and shutdown is bounded
+# (agent.stop() waits at most a few seconds).
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    remote_gateway_service.start_if_enabled()
+    yield
+    await remote_gateway_service.stop()
+
+
+app = FastAPI(title="Siena v2 Control Panel API", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost"],
@@ -589,6 +608,8 @@ if "computer_warning_vram_percent" in _persisted_settings:
     config.COMPUTER_WARNING_VRAM_PERCENT = _persisted_settings["computer_warning_vram_percent"]
 if "computer_warning_disk_free_gb" in _persisted_settings:
     config.COMPUTER_WARNING_DISK_FREE_GB = _persisted_settings["computer_warning_disk_free_gb"]
+if "remote_gateway_enabled" in _persisted_settings:
+    config.REMOTE_GATEWAY_ENABLED = _persisted_settings["remote_gateway_enabled"]
 
 base_logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL)
 if _settings_load_error:
@@ -697,6 +718,26 @@ computer_service = ComputerService(
     ollama_status_provider=lambda: _ollama_status(),
     tts_status_provider=_computer_tts_status,
     stt_status_provider=_computer_stt_status,
+)
+
+
+# Siena Remote Presence (0.2.3, remote_gateway/) — one service instance,
+# driven by the FastAPI lifespan (start/stop with the backend), the settings
+# apply block (live enable/disable), and /api/remote-gateway/* below. The
+# gateway token stays inside the DPAPI store; this module never sees it.
+def _remote_gateway_broadcast(event: dict[str, Any]) -> None:
+    try:
+        asyncio.get_running_loop().create_task(trace_hub.broadcast(event))
+    except RuntimeError:
+        pass  # no running loop (e.g. during import) — trace is best-effort
+
+
+remote_gateway_service = RemoteGatewayService(
+    credentials_store=GatewayCredentialsStore(),
+    relay_url_provider=lambda: config.REMOTE_GATEWAY_RELAY_URL,
+    enabled_provider=lambda: config.REMOTE_GATEWAY_ENABLED,
+    logger=base_logger,
+    broadcast=_remote_gateway_broadcast,
 )
 
 
@@ -1076,6 +1117,7 @@ def _settings_payload() -> dict[str, Any]:
         "computer_warning_ram_percent": config.COMPUTER_WARNING_RAM_PERCENT,
         "computer_warning_vram_percent": config.COMPUTER_WARNING_VRAM_PERCENT,
         "computer_warning_disk_free_gb": config.COMPUTER_WARNING_DISK_FREE_GB,
+        "remote_gateway_enabled": config.REMOTE_GATEWAY_ENABLED,
     }
 
 
@@ -2525,6 +2567,11 @@ async def update_settings(update: SettingsUpdate) -> dict[str, Any]:
         config.COMPUTER_WARNING_VRAM_PERCENT = changes["computer_warning_vram_percent"]
     if "computer_warning_disk_free_gb" in changes:
         config.COMPUTER_WARNING_DISK_FREE_GB = changes["computer_warning_disk_free_gb"]
+    if "remote_gateway_enabled" in changes:
+        config.REMOTE_GATEWAY_ENABLED = changes["remote_gateway_enabled"]
+        # Live apply — enabling starts the Home Gateway Agent, disabling
+        # stops it cleanly; no backend restart needed.
+        await remote_gateway_service.apply_enabled(config.REMOTE_GATEWAY_ENABLED)
 
     client_affecting = {"primary_model", "ollama_host", "request_timeout_seconds", "num_ctx", "num_predict"}
     if client_affecting & changes.keys():
@@ -2997,6 +3044,40 @@ async def computer_summary() -> dict[str, Any]:
     if state is None:
         return {"enabled": True, "summary": "Не удалось собрать состояние компьютера", "code": "metrics_unavailable", "warning_count": 0}
     return {"enabled": True, **ComputerService.summarize(state)}
+
+
+# ─── Siena Remote Presence: Home Gateway (0.2.3, remote_gateway/) ──────────
+# Status + manual controls only. Deliberately NO endpoint accepts or returns
+# the gateway token — first-time configuration is local-CLI-only
+# (python -m remote_gateway.manage configure), so a token can never pass
+# through a request body that debug/trace tooling might capture.
+
+
+@app.get("/api/remote-gateway/status")
+async def remote_gateway_status() -> dict[str, Any]:
+    return remote_gateway_service.status()
+
+
+@app.post("/api/remote-gateway/connect")
+async def remote_gateway_connect() -> dict[str, Any]:
+    if not remote_gateway_service.is_configured():
+        raise HTTPException(status_code=409, detail="remote gateway is not configured — run: python -m remote_gateway.manage configure")
+    started = remote_gateway_service.connect()
+    return {"started": started, **remote_gateway_service.status()}
+
+
+@app.post("/api/remote-gateway/disconnect")
+async def remote_gateway_disconnect() -> dict[str, Any]:
+    await remote_gateway_service.disconnect()
+    return {"disconnected": True, **remote_gateway_service.status()}
+
+
+@app.post("/api/remote-gateway/reconnect")
+async def remote_gateway_reconnect() -> dict[str, Any]:
+    if not remote_gateway_service.is_configured():
+        raise HTTPException(status_code=409, detail="remote gateway is not configured")
+    await remote_gateway_service.reconnect()
+    return {"reconnecting": True, **remote_gateway_service.status()}
 
 
 @app.get("/api/computer/warnings")

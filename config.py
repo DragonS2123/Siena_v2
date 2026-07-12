@@ -335,6 +335,19 @@ COMPUTER_WARNING_RAM_PERCENT = 85
 COMPUTER_WARNING_VRAM_PERCENT = 90
 COMPUTER_WARNING_DISK_FREE_GB = 10
 
+# --- Siena Remote Presence: Home Gateway (Phase 1, remote_gateway/) ---
+# Постоянное исходящее WSS-соединение с Relay (relay.sienaai.ru), чтобы
+# Android-приложение видело "Домашняя Siena: подключена", пока backend
+# работает. Phase 1 — ТОЛЬКО presence: auth + heartbeat + reconnect;
+# никакого удалённого чата, команд, файлов или payload'ов.
+#
+# Gateway token НИКОГДА не хранится здесь, в settings.json или в git —
+# только в зашифрованном DPAPI-хранилище (remote_gateway/credentials.py):
+# %LOCALAPPDATA%\Siena_v2\remote_gateway\credentials.json (encrypted blob).
+# Настройка: python -m remote_gateway.manage configure
+REMOTE_GATEWAY_ENABLED = False  # включается человеком после configure; persisted
+REMOTE_GATEWAY_RELAY_URL = "wss://relay.sienaai.ru"  # production; localhost разрешён только для тестов (см. remote_gateway/protocol.py)
+
 # --- Chat input ---
 CHAT_INPUT_MAX_CHARS = 4000  # обеспечивается и сервером (/api/chat), и UI-счётчиком
 

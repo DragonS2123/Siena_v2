@@ -12,7 +12,7 @@ import {
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson, Languages,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Waves, Headphones, Download,
-  Sparkles, Monitor, Gauge,
+  Sparkles, Monitor, Gauge, Radio,
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
@@ -29,6 +29,7 @@ import { UiPreferencesProvider, useUiPreferences } from "../hooks/useUiPreferenc
 import type { StartupPage } from "../hooks/useUiPreferences";
 import { useComputerStatus } from "../hooks/useComputerStatus";
 import { usePresence } from "../hooks/usePresence";
+import { useRemoteGateway } from "../hooks/useRemoteGateway";
 import { useSettings } from "../hooks/useSettings";
 import { useSpeech, type SpeechState, type UseSpeechResult } from "../hooks/useSpeech";
 import { useStreamingSpeech, type UseStreamingSpeechResult } from "../hooks/useStreamingSpeech";
@@ -52,7 +53,7 @@ type MainView =
 type ModelState = "idle" | "thinking" | "generating" | "tool";
 type SettingsSection =
   | "appearance" | "model" | "startup" | "tools"
-  | "code" | "voice" | "language" | "presence" | "desktop" | "computer" | "developer";
+  | "code" | "voice" | "language" | "presence" | "desktop" | "computer" | "remote" | "developer";
 type AttachmentType = "image" | "text" | "code" | "markdown" | "json" | "log";
 type VoiceState =
   | "idle" | "requesting-permission" | "listening" | "speaking-user" | "transcribing"
@@ -3539,6 +3540,7 @@ const SETTINGS_NAV: { id: SettingsSection; labelKey: string; icon: React.Element
   { id: "presence", labelKey: "settings.nav.presence", icon: Sparkles },
   { id: "desktop", labelKey: "settings.nav.desktop", icon: Monitor },
   { id: "computer", labelKey: "settings.nav.computer", icon: Gauge },
+  { id: "remote", labelKey: "settings.nav.remote", icon: Radio },
   { id: "developer", labelKey: "settings.nav.developer", icon: Terminal },
 ];
 
@@ -3574,6 +3576,7 @@ function SettingsView() {
             {active === "presence" && <PresenceSettings />}
             {active === "desktop" && <DesktopSettings />}
             {active === "computer" && <ComputerSettings />}
+            {active === "remote" && <RemoteGatewaySettings />}
             {active === "developer" && <DeveloperSettings />}
           </motion.div>
         </AnimatePresence>
@@ -4434,6 +4437,111 @@ function ComputerSettings() {
       {numberRow("settings.computer.diskWarn", "settings.computer.diskWarnSub", settings.computer_warning_disk_free_gb, 1, 10000, "computer_warning_disk_free_gb")}
     </SettingsCard>
     <LocalOnlyNotice label={t("settings.computer.readOnlyNote")} />
+  </>);
+}
+
+// Siena Remote Presence (0.2.3, remote_gateway/) — Home Gateway status +
+// manual controls. The gateway token never reaches this UI: status payloads
+// are token-free server-side, and first-time configuration is deliberately
+// a local CLI flow (shown as instructions below), not a browser input.
+const REMOTE_STATE_BADGE: Record<string, string> = {
+  connected: "ok",
+  connecting: "warn",
+  authenticating: "warn",
+  reconnecting: "warn",
+  rate_limited: "warn",
+  stopping: "warn",
+  authentication_failed: "error",
+  connection_replaced: "error",
+  failed: "error",
+  not_configured: "neutral",
+  disabled: "neutral",
+  disconnected: "neutral",
+};
+
+function RemoteGatewaySettings() {
+  const { settings, saving, saveError, save } = useSettings();
+  const { status, loading, error, acting, refresh, connect, disconnect, reconnect } = useRemoteGateway();
+  const { t } = useUiPreferences();
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  const persistEnabled = async (value: boolean) => {
+    setSaveStatus(null);
+    const ok = await save({ remote_gateway_enabled: value });
+    setSaveStatus(ok ? t("common.saved") : null);
+    await refresh();
+  };
+
+  const stateKey = status ? `remote.state.${status.state}` : null;
+  const stateLabel = stateKey ? (t(stateKey) !== stateKey ? t(stateKey) : status?.state) : null;
+
+  const row = (labelKey: string, value: React.ReactNode) => (
+    <div className="flex items-center justify-between">
+      <span className="text-xs text-[#8a7f75]">{t(labelKey)}</span>
+      <span className="text-xs text-[#c8c0b7]">{value ?? "—"}</span>
+    </div>
+  );
+
+  return (<>
+    <SectionHeader title={t("settings.remote.title")} desc={t("settings.remote.desc")} action={<Badge label={t("settings.remote.phaseBadge")} variant="accent" />} />
+    {(error || saveError) && <div className="text-xs text-red-400">{error || saveError}</div>}
+
+    <SettingsCard title={t("settings.remote.status")}>
+      {loading && !status ? (
+        <div className="text-xs text-[#6b5f57]">{t("common.loading")}</div>
+      ) : status ? (<>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-[#8a7f75]">{t("settings.remote.state")}</span>
+          <Badge label={stateLabel ?? "?"} variant={REMOTE_STATE_BADGE[status.state] ?? "neutral"} />
+        </div>
+        {row("settings.remote.configured", status.configured ? t("settings.desktop.yes") : t("settings.desktop.no"))}
+        {row("settings.remote.gatewayId", status.gateway_id)}
+        {row("settings.remote.relayHost", status.relay_host)}
+        {row("settings.remote.connectedAt", status.connected_at)}
+        {row("settings.remote.lastContact", status.last_server_contact_at)}
+        {status.reconnect_attempt > 0 && row("settings.remote.reconnectAttempt", String(status.reconnect_attempt))}
+        {status.safe_error_code && row("settings.remote.lastError", status.safe_error_code)}
+        {status.last_close_code != null && row("settings.remote.lastCloseCode", String(status.last_close_code))}
+      </>) : (
+        <div className="text-xs text-[#6b5f57]">{t("sidebar.backendUnreachable")}</div>
+      )}
+    </SettingsCard>
+
+    <SettingsCard title={t("settings.remote.control")}>
+      <Toggle label={t("settings.remote.enable")} sub={t("settings.remote.enableSub")} badge={<Badge label={t("common.badge.live")} variant="ok" />}
+        checked={settings?.remote_gateway_enabled ?? false} disabled={saving || !status?.configured}
+        onChange={(v) => void persistEnabled(v)} />
+      <div className="flex gap-2">
+        <button onClick={() => void connect()} disabled={acting || !status?.configured || status?.running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[#c4644a]/30 text-[#c4644a] hover:bg-[#c4644a]/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          {t("settings.remote.connect")}
+        </button>
+        <button onClick={() => void disconnect()} disabled={acting || !status?.running}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          {t("settings.remote.disconnect")}
+        </button>
+        <button onClick={() => void reconnect()} disabled={acting || !status?.configured}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium border border-white/[0.08] text-[#8a7f75] hover:text-[#c8c0b7] hover:border-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          {t("settings.remote.reconnect")}
+        </button>
+      </div>
+      <div className="text-[10px] text-[#4b4540]">{t("settings.remote.disconnectNote")}</div>
+      <SettingsSaveStatus saving={saving} saveError={saveError} saveStatus={saveStatus} />
+    </SettingsCard>
+
+    {!status?.configured && (
+      <SettingsCard title={t("settings.remote.setup")}>
+        <div className="text-xs text-[#a89f96]">{t("settings.remote.setupIntro")}</div>
+        <pre className="px-3 py-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono text-[#c8c0b7] overflow-x-auto">
+{`cd G:\\Siena_v2
+python -m remote_gateway.manage configure
+python -m remote_gateway.manage test`}
+        </pre>
+        <div className="text-[10px] text-[#4b4540]">{t("settings.remote.setupNote")}</div>
+      </SettingsCard>
+    )}
+
+    <LocalOnlyNotice label={t("settings.remote.securityNote")} />
   </>);
 }
 

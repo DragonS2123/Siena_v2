@@ -25,6 +25,7 @@ import type {
   ModelsResponse,
   PresenceSayResponse,
   PresenceStatus,
+  RemoteGatewayStatus,
   ResourcesStatusResponse,
   RuntimeStatus,
   SettingsPayload,
@@ -291,6 +292,20 @@ export const sienaClient = {
       method: "POST",
       body: JSON.stringify(model ? { target, model } : { target }),
     }),
+
+  // Siena Remote Presence (0.2.3, remote_gateway/) — Home Gateway status +
+  // manual controls. No endpoint accepts or returns the gateway token
+  // (local-CLI-only configuration; see remote_gateway/manage.py).
+  getRemoteGatewayStatus: () => request<RemoteGatewayStatus>("/api/remote-gateway/status"),
+
+  connectRemoteGateway: () =>
+    request<RemoteGatewayStatus & { started: boolean }>("/api/remote-gateway/connect", { method: "POST" }),
+
+  disconnectRemoteGateway: () =>
+    request<RemoteGatewayStatus & { disconnected: boolean }>("/api/remote-gateway/disconnect", { method: "POST" }),
+
+  reconnectRemoteGateway: () =>
+    request<RemoteGatewayStatus & { reconnecting: boolean }>("/api/remote-gateway/reconnect", { method: "POST" }),
 
   // Presence layer (0.2.1, Phase 1) — local, lightweight, opt-in runtime
   // state (available/idle/listening/thinking/speaking/quiet/offline/error).

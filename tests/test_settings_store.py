@@ -215,6 +215,8 @@ def test_persistable_fields_matches_expected_set():
         "computer_warning_ram_percent",
         "computer_warning_vram_percent",
         "computer_warning_disk_free_gb",
+        # Siena Remote Presence (0.2.3) — enable flag only, never the token.
+        "remote_gateway_enabled",
     }
 
 

@@ -363,6 +363,33 @@ export interface SettingsPayload {
   computer_warning_ram_percent: number;
   computer_warning_vram_percent: number;
   computer_warning_disk_free_gb: number;
+  // Siena Remote Presence (0.2.3, remote_gateway/) — only the enable flag.
+  // The gateway token NEVER passes through any HTTP API or reaches the
+  // frontend: first-time setup is local-CLI-only (remote_gateway/manage.py).
+  remote_gateway_enabled: boolean;
+}
+
+// GET /api/remote-gateway/status — safe snapshot only (remote_gateway/
+// agent.snapshot(): no token, no Authorization, no raw frames, shortened
+// gateway_id). `state` is the HomeGatewayAgent state machine value.
+export type RemoteGatewayState =
+  | "not_configured" | "disabled" | "disconnected" | "connecting"
+  | "authenticating" | "connected" | "reconnecting" | "authentication_failed"
+  | "connection_replaced" | "rate_limited" | "failed" | "stopping";
+
+export interface RemoteGatewayStatus {
+  configured: boolean;
+  enabled: boolean;
+  running: boolean;
+  state: RemoteGatewayState | string;
+  gateway_id: string | null; // already shortened server-side (gw_…XXXXX)
+  relay_host: string;
+  connected_at: string | null;
+  last_server_contact_at: string | null;
+  reconnect_attempt: number;
+  next_reconnect_at: string | null;
+  last_close_code: number | null;
+  safe_error_code: string | null;
 }
 
 // GET /api/computer/status (computer/computer_state.py) — read-only snapshot
