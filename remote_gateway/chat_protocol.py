@@ -13,6 +13,8 @@ network boundary blindly, even a semi-trusted one).
 
 from __future__ import annotations
 
+import re
+import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -213,6 +215,42 @@ def build_tts_ready(
         "mime_type": mime_type,
         "size_bytes": size_bytes,
         "duration_ms": duration_ms,
+    }
+
+
+# Strips control characters and Markdown-ish emphasis markers (the title
+# comes from a deterministic truncation of plain user text, never the model,
+# so this is just belt-and-braces before it ever reaches Relay/Android).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MARKDOWN_CHARS_RE = re.compile(r"[*_`#\[\]]")
+MAX_TITLE_CHARS = 80
+
+
+def sanitize_conversation_title(title: str) -> str:
+    """Trims, strips control/Markdown characters, and caps at
+    MAX_TITLE_CHARS — matches the Relay-side validation
+    (conversation.title, 1-80 chars, no control chars, no markdown) so a
+    title that already passes this never gets rejected downstream."""
+    cleaned = _MARKDOWN_CHARS_RE.sub("", _CONTROL_CHARS_RE.sub("", title)).strip()
+    return cleaned[:MAX_TITLE_CHARS] or "New Chat"
+
+
+def build_conversation_title(
+    *, conversation_id: str, device_id: str, title: str,
+) -> dict[str, Any]:
+    """Gateway -> Relay -> the one Device that owns `conversation_id`.
+    Includes `device_id` explicitly because Relay has no persistent
+    conversation_id -> device_id mapping (chat routing there is keyed by
+    ephemeral in-flight request_id) — see G:\\SienaRelay\\app\\chat\\gateway_handlers.py.
+    Never persisted by Relay, never logged with the title text (see that
+    module's audit-safe-fields convention)."""
+    return {
+        "type": "conversation.title",
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": f"title-{secrets.token_hex(8)}",
+        "conversation_id": conversation_id,
+        "device_id": device_id,
+        "title": sanitize_conversation_title(title),
     }
 
 

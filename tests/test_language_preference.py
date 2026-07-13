@@ -58,7 +58,7 @@ def test_default_auto_injects_no_language_note(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
-    assert captured["content"] == "Привет!"
+    assert "Привет!" in captured["content"]
     for note in server._LANGUAGE_PREFERENCE_NOTES.values():
         assert note not in captured["content"]
 

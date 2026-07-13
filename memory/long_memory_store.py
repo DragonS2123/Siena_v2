@@ -236,3 +236,27 @@ class LongMemoryStore:
             raise SienaInfraError(f"Ошибка чтения long_memory.sqlite3: {exc}") from exc
 
         return [dict(row) for row in rows]
+
+    def list_high_importance(self, limit: int = 20) -> list[dict]:
+        """Facts explicitly marked importance="high" by a prior
+        long_memory_save call — used by memory/user_memory_context.py to
+        deterministically surface confirmed user facts (e.g. the user's
+        name) into every chat turn, without depending on the model choosing
+        to call long_memory_search itself."""
+        limit = min(max(limit, 1), self._search_hard_limit)
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, created_at, updated_at, text, category, importance, source
+                    FROM long_memory
+                    WHERE importance = 'high'
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Ошибка чтения long_memory.sqlite3: {exc}") from exc
+
+        return [dict(row) for row in rows]

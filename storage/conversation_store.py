@@ -95,6 +95,17 @@ ON remote_conversation_links(conversation_id);
 _DEFAULT_TITLE = "New Chat"
 
 
+def generate_conversation_title(text: str) -> str:
+    """The one production title-generation function — a deterministic,
+    technical truncation of the first user message, NOT a model decision
+    (see append_message's own comment on this). Extracted as a standalone
+    function so remote_gateway/remote_chat_service.py can compute the exact
+    same title Siena_v2 just assigned (to push it to the owning Android
+    device via conversation.title) without duplicating the logic or
+    re-deriving it differently."""
+    return " ".join(text.strip().split())[:40] or _DEFAULT_TITLE
+
+
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
@@ -419,7 +430,7 @@ class ConversationStore:
                         (conversation_id,),
                     ).fetchone()
                     if count_row is not None and count_row["c"] == 0:
-                        title = " ".join(content.strip().split())[:40] or _DEFAULT_TITLE
+                        title = generate_conversation_title(content)
                         conn.execute(
                             "UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id)
                         )

@@ -181,9 +181,11 @@ def test_conversation_link_created_once_and_reused(tmp_path):
     service, conversation_store = _make_chat_service(tmp_path)
     gateway_id = TEST_GATEWAY_ID
 
-    first = service._resolve_local_conversation("conv_remote_abc", gateway_id)
-    second = service._resolve_local_conversation("conv_remote_abc", gateway_id)
+    first, first_is_new = service._resolve_local_conversation("conv_remote_abc", gateway_id)
+    second, second_is_new = service._resolve_local_conversation("conv_remote_abc", gateway_id)
     assert first == second
+    assert first_is_new is True
+    assert second_is_new is False
 
     link = conversation_store.get_remote_link("conv_remote_abc")
     assert link["conversation_id"] == first
@@ -221,7 +223,7 @@ def test_chat_request_sends_accepted_then_deltas_then_completed(tmp_path):
     run_async(service.handle_message(_chat_request_message(), recorder.send, TEST_GATEWAY_ID))
 
     types = [m["type"] for m in recorder.sent]
-    assert types == ["chat.accepted", "chat.delta", "chat.completed"]
+    assert types == ["chat.accepted", "chat.delta", "chat.completed", "conversation.title"]
     assert recorder.sent[0]["request_id"] == "chat-1"
     assert recorder.sent[1]["text"] == "hello world"
     assert recorder.sent[1]["sequence"] == 1
@@ -293,7 +295,7 @@ def test_duplicate_request_id_is_idempotent_noop(tmp_path):
         await task
 
     run_async(scenario())
-    assert [m["type"] for m in recorder.sent] == ["chat.accepted", "chat.delta", "chat.completed"]
+    assert [m["type"] for m in recorder.sent] == ["chat.accepted", "chat.delta", "chat.completed", "conversation.title"]
 
 
 def test_different_request_id_while_active_rejected(tmp_path):
@@ -456,7 +458,7 @@ def test_download_failure_does_not_crash_turn(tmp_path):
         text="hi", attachments=[{"attachment_id": "att_abc12345678901234", "kind": "image", "action": "auto", "target_language": None}],
     )
     run_async(service.handle_message(message, recorder.send, TEST_GATEWAY_ID))
-    assert [m["type"] for m in recorder.sent] == ["chat.accepted", "chat.delta", "chat.completed"]
+    assert [m["type"] for m in recorder.sent] == ["chat.accepted", "chat.delta", "chat.completed", "conversation.title"]
 
 
 def test_garbage_bytes_fail_mime_sniff_and_are_skipped(tmp_path):

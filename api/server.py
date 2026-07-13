@@ -46,6 +46,7 @@ from logging_.logger import SienaLogger
 from main import build_registry
 from memory.long_memory_store import LongMemoryStore
 from memory.short_memory_store import ShortMemoryStore
+from memory.user_memory_context import build_user_memory_context, memory_context_event_fields
 from ocr.glm_ocr_service import (
     GlmOcrService,
     OcrModelNotInstalledError,
@@ -1814,6 +1815,42 @@ async def run_chat_turn(
     ocr_results = ocr_results if ocr_results is not None else []
     vision_results = vision_results if vision_results is not None else []
 
+    # Moved up (was previously constructed later, only for tool
+    # registration) so its long_store can also build the deterministic
+    # user-memory context below — one construction, two uses, no duplicate
+    # SQLite opens.
+    request_registry, _, request_long_store, _ = build_registry(logger)
+
+    # Runtime date/time (bugfix): formed fresh from the real system clock on
+    # EVERY turn, desktop and remote alike — never a hardcoded/stale string,
+    # never left to the model's own (frozen-training-data) guess. Previously
+    # the current date was only available if the model chose to call
+    # get_current_time; nothing forced that before a date-sensitive
+    # web_search query, which is how a stale/hallucinated date reached a
+    # research query in production.
+    now_local = datetime.now().astimezone()
+    runtime_context = (
+        "[RUNTIME_CONTEXT]\n"
+        f"current_date: {now_local.strftime('%Y-%m-%d')}\n"
+        f"current_time: {now_local.strftime('%H:%M:%S')}\n"
+        f"timezone: {now_local.strftime('%Z%z') or 'local'}\n"
+        "[/RUNTIME_CONTEXT]"
+    )
+
+    # Deterministic user-memory context (bugfix: remote chat memory parity).
+    # Rebuilds a cold Session every turn (remote_gateway/remote_chat_service.py),
+    # so it can't rely on tool-call momentum from earlier turns the way an
+    # already-warmed-up desktop conversation can. This surfaces previously
+    # confirmed high-importance facts (memory/user_memory_context.py)
+    # regardless of whether the model decides to call long_memory_search —
+    # identical code path for desktop and remote since both share this
+    # function. Never logs fact content, only a count.
+    user_memory_context = build_user_memory_context(request_long_store)
+    if user_memory_context:
+        logger.event("memory_context_injected", **memory_context_event_fields(user_memory_context))
+    else:
+        logger.event("memory_context_empty")
+
     memory_intent_note = ""
     if wants_long_memory_save(text):
         logger.event(
@@ -1912,6 +1949,7 @@ async def run_chat_turn(
     language_preference_note = _LANGUAGE_PREFERENCE_NOTES.get(config.PREFERRED_RESPONSE_LANGUAGE)
     combined_context = "\n\n".join(
         b for b in (
+            runtime_context, user_memory_context,
             attachment_context, image_ocr_context, image_vision_context,
             vision_unavailable_note, memory_intent_note, research_intent_note,
             nucleares_context, computer_context, language_preference_note,
@@ -1939,8 +1977,6 @@ async def run_chat_turn(
             requested_text=text[:200],
             console_message="[VISION] requested, but no vision result is available this turn",
         )
-
-    request_registry, _, _, _ = build_registry(logger)
 
     decision = model_router.route(
         text, active_chat_model=_active_chat_model,

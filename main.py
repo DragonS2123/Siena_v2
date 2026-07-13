@@ -43,7 +43,9 @@ from tools.memory_tools import (
 )
 from tools.open_url import OpenUrlTool
 from tools.registry import ToolRegistry
+from tools.translate_tool import TranslateTextTool
 from tools.web_search import WebSearchTool
+from translator.translator_service import TranslatorService
 
 EXIT_COMMANDS = {"exit", "quit", "выход"}
 
@@ -118,6 +120,21 @@ def build_registry(
     registry.register(
         DelegateModelTool(delegate_ollama_client, config.DELEGATE_MODELS, logger, config.PRIMARY_MODEL)
     )
+    # Translation goes through translator_service (own prompt/fallback
+    # logic — see tools/translate_tool.py), never through the generic
+    # delegate_model whitelist. Registered only when the translator is
+    # actually enabled, matching config.MODEL_REGISTRY's own
+    # "enabled": ENABLE_TRANSLATOR for the translator role.
+    if config.ENABLE_TRANSLATOR:
+        translator_service = TranslatorService(
+            host=config.OLLAMA_HOST,
+            model=config.TRANSLATOR_MODEL,
+            timeout=config.TRANSLATOR_TIMEOUT_SECONDS,
+            logger=logger,
+        )
+        registry.register(
+            TranslateTextTool(translator_service, config.TRANSLATOR_FALLBACK_MODEL, logger)
+        )
     return registry, short_store, long_store, candidate_store
 
 

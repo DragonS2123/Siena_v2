@@ -20,9 +20,11 @@ from remote_gateway.chat_protocol import (
     build_chat_completed,
     build_chat_delta,
     build_chat_failed,
+    build_conversation_title,
     parse_chat_cancel,
     parse_chat_request,
 )
+from storage.conversation_store import generate_conversation_title
 
 MAX_DELTA_TEXT_BYTES = 16_000
 MAX_TOTAL_RESPONSE_BYTES = 256_000
@@ -154,7 +156,7 @@ class RemoteChatService:
     ) -> None:
         self._diag("remote_chat_received", {"request_id": parsed.request_id})
         try:
-            local_conversation_id = self._resolve_local_conversation(parsed.conversation_id, gateway_id)
+            local_conversation_id, is_new_conversation = self._resolve_local_conversation(parsed.conversation_id, gateway_id)
             logger = self._logger_factory(local_conversation_id)
             session = self._build_session(local_conversation_id)
 
@@ -195,6 +197,22 @@ class RemoteChatService:
 
             await self._stream_answer(send, parsed, turn_result)
             self._diag("remote_chat_completed", {"request_id": parsed.request_id})
+
+            # Conversation title (bugfix): the FIRST completed user turn of a
+            # brand-new remote conversation gets the exact same deterministic
+            # title storage/conversation_store.py::append_message already
+            # assigned server-side — pushed to the one Device that owns it so
+            # Android's Room ConversationEntity.title updates without a
+            # restart, instead of the phone silently keeping its own
+            # locally-derived title. Never logs the title text itself.
+            if is_new_conversation:
+                title = generate_conversation_title(parsed.text)
+                await send(build_conversation_title(
+                    conversation_id=parsed.conversation_id,
+                    device_id=parsed.device_id,
+                    title=title,
+                ))
+                self._diag("remote_chat_title_sent", {"request_id": parsed.request_id})
         except asyncio.CancelledError:
             self._diag("remote_chat_cancelled", {"request_id": parsed.request_id})
             await send(build_chat_cancelled(request_id=parsed.request_id, conversation_id=parsed.conversation_id))
@@ -206,17 +224,23 @@ class RemoteChatService:
                 code="internal_error", message="Internal error.",
             ))
 
-    def _resolve_local_conversation(self, remote_conversation_id: str, gateway_id: str) -> str:
+    def _resolve_local_conversation(self, remote_conversation_id: str, gateway_id: str) -> tuple[str, bool]:
+        """Returns (local_conversation_id, is_new) — `is_new` tells the
+        caller whether this is the very first turn of a brand-new local
+        conversation (used to decide whether to push conversation.title)."""
         link = self._conversation_store.get_remote_link(remote_conversation_id)
         if link is not None:
-            return link["conversation_id"]
+            return link["conversation_id"], False
         local_conversation_id = self._create_conversation(None)
         self._conversation_store.create_remote_link(remote_conversation_id, gateway_id, local_conversation_id)
         # A concurrent first message for the same remote_conversation_id can
         # race here (two devices/tasks both see no link and both create one)
         # — create_remote_link() is ON CONFLICT DO NOTHING, so re-read to
         # make sure every caller converges on the SAME winning conversation.
-        return self._conversation_store.get_remote_link(remote_conversation_id)["conversation_id"]
+        # (In that rare race, both callers report is_new=True and a
+        # conversation.title may be sent twice — harmless, Android's update
+        # is idempotent.)
+        return self._conversation_store.get_remote_link(remote_conversation_id)["conversation_id"], True
 
     async def _process_attachments(self, parsed: Any, logger: Any) -> tuple[str, str, list[dict[str, Any]], list[dict[str, Any]]]:
         ocr_blocks: list[str] = []
