@@ -64,6 +64,13 @@ from remote_gateway.remote_tts_service import RemoteTtsService
 from remote_gateway.service import RemoteGatewayService
 from storage.conversation_store import ConversationStore
 from storage.settings_store import PERSISTABLE_FIELDS, SettingsStore
+from system_metrics import (
+    CpuRamProvider,
+    NullGpuProvider,
+    NvidiaGpuProvider,
+    SystemMetricsService,
+    WindowsGpuProvider,
+)
 from tools.candidate_memory_tools import promote_candidate
 from translator.translator_service import (
     TranslatorCallFailedError,
@@ -730,6 +737,18 @@ computer_service = ComputerService(
     ollama_status_provider=lambda: _ollama_status(),
     tts_status_provider=_computer_tts_status,
     stt_status_provider=_computer_stt_status,
+)
+
+# System Metrics Service (cross-vendor CPU/RAM/GPU/VRAM, system_metrics/) —
+# strictly local (GET /api/system/metrics only, no WebSocket/remote
+# delivery). NVIDIA (nvidia-smi) is tried before the generic Windows
+# DXGI/PDH provider because it can also report GPU temperature; on this
+# AMD-only dev machine nvidia-smi finds nothing and WindowsGpuProvider wins.
+system_metrics_service = SystemMetricsService(
+    cpu_ram_provider=CpuRamProvider(),
+    gpu_providers=[NvidiaGpuProvider(), WindowsGpuProvider(), NullGpuProvider()],
+    logger=base_logger,
+    timeout_seconds=config.SYSTEM_METRICS_PROBE_TIMEOUT_SECONDS,
 )
 
 
@@ -3139,6 +3158,18 @@ async def computer_summary() -> dict[str, Any]:
     if state is None:
         return {"enabled": True, "summary": "Не удалось собрать состояние компьютера", "code": "metrics_unavailable", "warning_count": 0}
     return {"enabled": True, **ComputerService.summarize(state)}
+
+
+# ─── System Metrics Service: cross-vendor CPU/RAM/GPU/VRAM (local only) ────
+# No WebSocket protocol, no remote delivery — see system_metrics/ package
+# docstring. Collected per request, same discipline as /api/computer/status.
+
+
+@app.get("/api/system/metrics")
+async def system_metrics() -> dict[str, Any]:
+    base_logger.event("system_metrics_snapshot_requested")
+    snapshot = await system_metrics_service.get_snapshot()
+    return snapshot.to_dict()
 
 
 # ─── Siena Remote (0.6.0): chat/attachment/tts bridge ──────────────────────

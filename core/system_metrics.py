@@ -46,6 +46,14 @@ def _find_nvidia_smi() -> str | None:
     return _nvidia_smi_path
 
 
+def find_nvidia_smi() -> str | None:
+    """Public alias of _find_nvidia_smi() — reused by
+    system_metrics/providers/nvidia.py so the cross-vendor SystemMetricsService
+    doesn't re-implement the same cached PATH lookup / re-pay a failed
+    subprocess spawn on every AMD/Intel-only machine."""
+    return _find_nvidia_smi()
+
+
 def cpu_ram_metrics() -> dict[str, Any]:
     """Never raises. psutil is a stable, well-tested dependency, but any
     unexpected platform quirk still falls back to clearly-null fields rather

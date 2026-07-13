@@ -335,6 +335,14 @@ COMPUTER_WARNING_RAM_PERCENT = 85
 COMPUTER_WARNING_VRAM_PERCENT = 90
 COMPUTER_WARNING_DISK_FREE_GB = 10
 
+# --- System Metrics Service (cross-vendor CPU/RAM/GPU/VRAM, system_metrics/) ---
+# Strictly local: GET /api/system/metrics only, no WebSocket/remote delivery.
+# Collected per request, no background polling. GPU provider fallback order
+# is NVIDIA (nvidia-smi) -> Windows DXGI/PDH (any vendor) -> none — see
+# system_metrics/service.py. Timeout guards against a hung subprocess/COM
+# call ever blocking the request past a few seconds.
+SYSTEM_METRICS_PROBE_TIMEOUT_SECONDS = 5
+
 # --- Siena Remote Presence: Home Gateway (Phase 1, remote_gateway/) ---
 # Постоянное исходящее WSS-соединение с Relay (relay.sienaai.ru), чтобы
 # Android-приложение видело "Домашняя Siena: подключена", пока backend
