@@ -13,10 +13,11 @@ explicit safe fields + protocol.redact() as a final net.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from remote_gateway import protocol
 from remote_gateway.transport import (
@@ -74,6 +75,17 @@ class HomeGatewayAgent:
         self._allow_insecure_localhost = allow_insecure_localhost
         self._on_event = on_event or (lambda _event, _fields: None)
 
+        # Application-protocol messages (chat/tts) are dispatched to this
+        # handler when set — see set_application_handler(). None in Phase 1
+        # deployments where only heartbeat is spoken.
+        self._application_handler: (
+            Callable[[dict[str, Any], Callable[[dict[str, Any]], Awaitable[None]], str], Awaitable[None]] | None
+        ) = None
+        # Serializes ALL outbound frames (heartbeat + any application-layer
+        # sends spawned from _dispatch_application_message) — websockets
+        # connections are not safe for concurrent send() from multiple tasks.
+        self._send_lock = asyncio.Lock()
+
         self._task: asyncio.Task | None = None
         self._generation = 0
 
@@ -91,6 +103,26 @@ class HomeGatewayAgent:
     @property
     def state(self) -> GatewayState:
         return self._state
+
+    @property
+    def gateway_id(self) -> str | None:
+        return self._gateway_id
+
+    def set_application_handler(
+        self,
+        handler: Callable[[dict[str, Any], Callable[[dict[str, Any]], Awaitable[None]], str], Awaitable[None]] | None,
+    ) -> None:
+        """Registers the callback invoked for any inbound message type other
+        than heartbeat.ack/error.unsupported_message (chat.request,
+        chat.cancel, tts.request in Siena Remote 0.6.0). Called with
+        (message, send, gateway_id) — send() writes a JSON frame back over
+        the CURRENT live connection (safe to call even after this connection
+        generation ends; the sender captured by a stale connection is simply
+        pointed at a closed socket and raises, which callers must tolerate).
+        Dispatched as a fire-and-forget task so a slow/failing chat turn can
+        never block the heartbeat loop or a concurrent turn for another
+        Device."""
+        self._application_handler = handler
 
     def snapshot(self) -> dict[str, Any]:
         """Safe status only — no token, no headers, no raw frames, no
@@ -265,7 +297,8 @@ class HomeGatewayAgent:
             if now >= next_heartbeat_at:
                 counter += 1
                 request_id = protocol.new_request_id(counter)
-                await connection.send(protocol.build_heartbeat(request_id))
+                async with self._send_lock:
+                    await connection.send(protocol.build_heartbeat(request_id))
                 pending_acks[request_id] = now + heartbeat_timeout
                 next_heartbeat_at = now + heartbeat_interval
 
@@ -290,11 +323,46 @@ class HomeGatewayAgent:
             if message_type == "heartbeat.ack":
                 pending_acks.pop(message.get("request_id"), None)
             elif message_type == "error.unsupported_message":
-                # We only ever send heartbeats in Phase 1; getting this back
-                # would mean a contract drift worth noticing in debug.
+                # Getting this back for heartbeat would mean contract drift;
+                # for an application message it just means Relay is on an
+                # older/different protocol version than this handler expects.
                 self._on_event("remote_gateway_unsupported_message", {"request_id": message.get("request_id")})
-            # Any other message type is safely ignored in Phase 1 (the Relay
-            # doesn't push anything else to gateways yet) — never logged raw.
+            elif self._application_handler is not None:
+                # chat.request / chat.cancel / tts.request (Siena Remote
+                # 0.6.0) — dispatched as a fire-and-forget task so a slow or
+                # failing chat/tts turn can never block this loop's heartbeat
+                # scheduling or a concurrent turn for another Device.
+                sender = self._make_sender(connection)
+                asyncio.create_task(self._dispatch_application_message(message, sender))
+            # Any other message type with no handler registered is safely
+            # ignored — never logged raw.
+
+    def _make_sender(self, connection: TransportConnection) -> Callable[[dict[str, Any]], Awaitable[None]]:
+        async def send(payload: dict[str, Any]) -> None:
+            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            async with self._send_lock:
+                await connection.send(text)
+
+        return send
+
+    async def _dispatch_application_message(
+        self, message: dict[str, Any], sender: Callable[[dict[str, Any]], Awaitable[None]]
+    ) -> None:
+        handler = self._application_handler
+        if handler is None:
+            return
+        try:
+            await handler(message, sender, self._gateway_id or "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A chat/tts bridge failure must never take down the connection
+            # loop — the bridge itself is responsible for sending the phone
+            # a chat.failed/tts.failed on its own errors; this is a last
+            # resort for bugs in the bridge itself. Never logged raw (may
+            # contain no message content by construction, but the handler
+            # itself owns all privacy-sensitive logging).
+            self._on_event("remote_gateway_application_handler_error", {"message_type": message.get("type")})
 
     async def _sleep_backoff(self, generation: int, attempt: int, *, reason: str, minimum: float = 0) -> int:
         base = BACKOFF_SCHEDULE_SECONDS[min(attempt, len(BACKOFF_SCHEDULE_SECONDS) - 1)]

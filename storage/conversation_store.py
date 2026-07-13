@@ -75,6 +75,21 @@ ON conversation_events(conversation_id);
 
 CREATE INDEX IF NOT EXISTS idx_conversation_attachments_message_id
 ON conversation_attachments(message_id);
+
+-- Siena Remote (0.6.0): maps a Relay-issued remote conversation_id (created
+-- once by the phone, persisted across app restarts) to the internal
+-- conversation this backend already uses for /api/chat + the React UI.
+-- Created once per remote conversation_id, never updated afterwards.
+CREATE TABLE IF NOT EXISTS remote_conversation_links (
+    remote_conversation_id TEXT PRIMARY KEY,
+    gateway_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_conversation_links_conversation_id
+ON remote_conversation_links(conversation_id);
 """
 
 _DEFAULT_TITLE = "New Chat"
@@ -429,6 +444,45 @@ class ConversationStore:
             "created_at": now,
             "metadata": metadata or {},
         }
+
+    # --- Remote (Siena Remote / Relay) conversation mapping ---
+
+    def get_remote_link(self, remote_conversation_id: str) -> dict[str, Any] | None:
+        """Looks up the internal conversation_id a phone's remote
+        conversation_id already maps to, if any. Never creates one — see
+        create_remote_link() for that."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT remote_conversation_id, gateway_id, conversation_id, created_at
+                    FROM remote_conversation_links WHERE remote_conversation_id = ?
+                    """,
+                    (remote_conversation_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Ошибка чтения remote_conversation_links {remote_conversation_id}: {exc}") from exc
+        return dict(row) if row is not None else None
+
+    def create_remote_link(self, remote_conversation_id: str, gateway_id: str, conversation_id: str) -> None:
+        """Creates the mapping once. Idempotent: if a link for this
+        remote_conversation_id already exists (a race between two concurrent
+        first messages), the existing row wins and this is a no-op."""
+        now = _now_iso()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO remote_conversation_links (
+                        remote_conversation_id, gateway_id, conversation_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(remote_conversation_id) DO NOTHING
+                    """,
+                    (remote_conversation_id, gateway_id, conversation_id, now),
+                )
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Ошибка записи remote_conversation_links {remote_conversation_id}: {exc}") from exc
 
     def append_event(self, conversation_id: str, event_type: str, payload: dict[str, Any]) -> None:
         event_id = str(uuid.uuid4())

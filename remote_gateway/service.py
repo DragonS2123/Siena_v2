@@ -77,6 +77,17 @@ class RemoteGatewayService:
     def is_configured(self) -> bool:
         return self._credentials_store.is_configured()
 
+    def set_application_handler(self, handler: Any) -> None:
+        """Registers the chat/tts application-message dispatcher — see
+        HomeGatewayAgent.set_application_handler(). Called once from
+        api/server.py's composition root, after the real chat/tts pipeline
+        objects exist (RemoteChatService/RemoteTtsService)."""
+        self._agent.set_application_handler(handler)
+
+    @property
+    def gateway_id(self) -> str | None:
+        return self._agent.gateway_id
+
     # ---- agent events -> diagnostics ---------------------------------------
 
     def _handle_agent_event(self, event: str, fields: dict[str, Any]) -> None:

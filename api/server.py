@@ -56,7 +56,10 @@ from ocr.glm_ocr_service import (
 from computer import ComputerService, ComputerSettings, build_computer_context, wants_computer_context
 from presence import PresenceService, PresenceSettings
 from presence.presence_service import PresenceTransition
+from remote_gateway.attachment_client import AttachmentClient, relay_http_base_url
 from remote_gateway.credentials import CredentialsStore as GatewayCredentialsStore
+from remote_gateway.remote_chat_service import RemoteChatService
+from remote_gateway.remote_tts_service import RemoteTtsService
 from remote_gateway.service import RemoteGatewayService
 from storage.conversation_store import ConversationStore
 from storage.settings_store import PERSISTABLE_FIELDS, SettingsStore
@@ -70,6 +73,7 @@ from voice.faster_qwen_tts import FasterQwen3TTSProvider
 from voice.qwen_tts import Qwen3TTSProvider
 from voice.qwen_tts_ggml_vulkan import QwenTTSGgmlVulkanProvider
 from voice.stt import STTUnavailableError, WhisperSTTProvider
+from voice.text_sanitize import sanitize_text_for_tts
 from voice.tts import SileroTTSProvider, TTSUnavailableError
 from voice.voice_profiles import VoiceProfile, VoiceProfileStore
 from voice.voice_service import VoiceService
@@ -454,7 +458,14 @@ class SessionStore:
 async def _lifespan(_app: FastAPI):
     remote_gateway_service.start_if_enabled()
     yield
+    # Order matters: stop the agent first (no new chat.request/tts.request
+    # can arrive once it's disconnecting), then cancel whatever remote
+    # generations were still in flight — see RemoteChatService.shutdown()/
+    # RemoteTtsService.shutdown() docstrings for the same asyncio.to_thread
+    # best-effort-cancellation caveat as run_chat_turn.
     await remote_gateway_service.stop()
+    await remote_chat_service.shutdown()
+    await remote_tts_service.shutdown()
 
 
 app = FastAPI(title="Siena v2 Control Panel API", lifespan=_lifespan)
@@ -732,8 +743,13 @@ def _remote_gateway_broadcast(event: dict[str, Any]) -> None:
         pass  # no running loop (e.g. during import) — trace is best-effort
 
 
+# Shared with AttachmentClient below (Siena Remote 0.6.0) so both the
+# heartbeat/auth agent and the attachment HTTPS client read the SAME
+# encrypted credentials without constructing separate DPAPI-backed instances.
+_gateway_credentials_store = GatewayCredentialsStore()
+
 remote_gateway_service = RemoteGatewayService(
-    credentials_store=GatewayCredentialsStore(),
+    credentials_store=_gateway_credentials_store,
     relay_url_provider=lambda: config.REMOTE_GATEWAY_RELAY_URL,
     enabled_provider=lambda: config.REMOTE_GATEWAY_ENABLED,
     logger=base_logger,
@@ -1768,6 +1784,269 @@ async def _run_image_vision(
     return context, results
 
 
+async def run_chat_turn(
+    *,
+    text: str,
+    conversation_id: str,
+    logger: BroadcastLogger,
+    session: Session,
+    user_message: dict[str, Any],
+    attachment_context: str = "",
+    image_ocr_context: str = "",
+    image_vision_context: str = "",
+    ocr_results: list[dict[str, Any]] | None = None,
+    vision_results: list[dict[str, Any]] | None = None,
+    vision_unavailable_note: str = "",
+    has_code_context: bool = False,
+) -> dict[str, Any]:
+    """The ONE place run_agent_loop is ever invoked — the real production
+    pipeline (system prompt, short/long memory, tools, research-first, model
+    routing, code specialists, conversation persistence). Shared by the local
+    /api/chat endpoint below AND the Siena Remote chat bridge
+    (remote_gateway/remote_chat_service.py) so a phone turn and a desktop
+    turn are indistinguishable to everything downstream of this call.
+
+    Raises SienaInfraError, MaxIterationsReached, or the original Exception
+    on failure (after marking user_message as failed) — never HTTPException;
+    callers translate that into their own transport (HTTP 5xx locally,
+    chat.failed remotely).
+    """
+    ocr_results = ocr_results if ocr_results is not None else []
+    vision_results = vision_results if vision_results is not None else []
+
+    memory_intent_note = ""
+    if wants_long_memory_save(text):
+        logger.event(
+            "memory_save_intent_detected",
+            text=text,
+            console_message="[MEMORY] похоже на явную просьбу сохранить в долговременную память",
+        )
+        memory_intent_note = (
+            "Похоже, пользователь явно просит сохранить что-то в долговременную память "
+            "(слова вроде «запомни», «сохрани», «добавь в память», «добавь что...», «запиши»). "
+            "Если это так — вызови long_memory_save с этим фактом, а не отвечай обычным текстом "
+            "без сохранения."
+        )
+
+    research_intent_note = ""
+    if wants_grounded_research(text):
+        logger.event(
+            "research_grounding_intent_detected",
+            text=text,
+            console_message="[RESEARCH] похоже на вопрос об идентичности/статусе, требующий проверки через web_search",
+        )
+        research_intent_note = (
+            "Похоже, пользователь спрашивает, кто/что это такое, или что произошло/происходит "
+            "с конкретным человеком, организацией или темой (возможно с указанием диапазона "
+            "лет). Твои внутренние знания могут быть устаревшими или неточными для подобных "
+            "вопросов, особенно если тема связана с политикой, конфликтами, военными "
+            "организациями или публичными фигурами. Прежде чем отвечать — вызови web_search, "
+            "даже если тебе кажется, что ты уже знаешь ответ. Не отвечай по памяти без проверки "
+            "для такого рода вопросов, и не утверждай, что использовала данные поиска, если "
+            "web_search не была вызвана."
+        )
+
+    nucleares_context = ""
+    if wants_nucleares_context(text):
+        logger.event(
+            "nucleares_context_injection_requested",
+            text=text[:200],
+            console_message="[NUCLERES] user asked for game telemetry context",
+        )
+        try:
+            nucleares_status_result = await asyncio.to_thread(nucleares_client.status)
+        except Exception as exc:
+            nucleares_status_result = {"game": "nucleares", "connected": False, "error": str(exc), "attempted": []}
+        nucleares_context = build_nucleares_context(nucleares_status_result)
+        if nucleares_status_result.get("connected"):
+            logger.event(
+                "nucleares_context_injected",
+                base_url=nucleares_status_result.get("base_url"),
+                parameter_count=nucleares_status_result.get("parameter_count"),
+                chars=len(nucleares_context),
+                normalized_keys=list(nucleares_status_result.get("normalized", {}).keys()),
+                console_message=f"[NUCLEARES] game telemetry context added ({len(nucleares_context)} chars)",
+            )
+        else:
+            logger.event(
+                "nucleares_context_unavailable",
+                error=nucleares_status_result.get("error"),
+                chars=len(nucleares_context),
+                console_message=f"[NUCLEARES] unavailable: {nucleares_status_result.get('error')}",
+            )
+    else:
+        nucleares_skip_reason = nucleares_context_skip_reason(text)
+        if nucleares_skip_reason:
+            logger.event(
+                "nucleares_context_skipped",
+                reason=nucleares_skip_reason,
+                text=text[:200],
+                console_message=f"[NUCLEARES] context skipped: {nucleares_skip_reason}",
+            )
+
+    computer_context = ""
+    if wants_computer_context(text):
+        if not config.ENABLE_COMPUTER_AWARENESS:
+            logger.event(
+                "computer_awareness_disabled",
+                console_message="[COMPUTER] context requested by message but the layer is disabled",
+            )
+        elif not config.ALLOW_COMPUTER_CONTEXT_IN_CHAT:
+            logger.event(
+                "computer_context_skipped",
+                reason="allow_computer_context_in_chat=false",
+                console_message="[COMPUTER] context skipped: disabled by setting",
+            )
+        else:
+            logger.event("computer_status_requested", source="chat_context")
+            computer_state = await _collect_computer_state()
+            if computer_state is not None:
+                computer_context = build_computer_context(computer_state, _computer_settings())
+                logger.event(
+                    "computer_context_injected",
+                    chars=len(computer_context),
+                    warning_codes=[w.code for w in computer_state.warnings],
+                    console_message=f"[COMPUTER] context added to prompt ({len(computer_context)} chars)",
+                )
+
+    language_preference_note = _LANGUAGE_PREFERENCE_NOTES.get(config.PREFERRED_RESPONSE_LANGUAGE)
+    combined_context = "\n\n".join(
+        b for b in (
+            attachment_context, image_ocr_context, image_vision_context,
+            vision_unavailable_note, memory_intent_note, research_intent_note,
+            nucleares_context, computer_context, language_preference_note,
+        ) if b
+    )
+    model_input = f"{text}\n\n{combined_context}" if combined_context and text else (combined_context or text)
+    session.add_user(model_input)
+    logger.event("user_message", content=text, conversation_id=conversation_id)
+
+    if image_ocr_context:
+        logger.event(
+            "ocr_context_injected",
+            chars=len(image_ocr_context),
+            console_message=f"[OCR] контекст изображений добавлен в prompt ({len(image_ocr_context)} символов)",
+        )
+    if image_vision_context:
+        logger.event(
+            "vision_context_injected",
+            chars=len(image_vision_context),
+            console_message=f"[VISION] context added to prompt ({len(image_vision_context)} chars)",
+        )
+    elif vision_unavailable_note:
+        logger.event(
+            "image_understanding_unavailable",
+            requested_text=text[:200],
+            console_message="[VISION] requested, but no vision result is available this turn",
+        )
+
+    request_registry, _, _, _ = build_registry(logger)
+
+    decision = model_router.route(
+        text, active_chat_model=_active_chat_model,
+        has_code_context=has_code_context or (bool(image_ocr_context) and model_router.looks_like_code_or_error(image_ocr_context)),
+    )
+    logger.event(
+        "model_route_decision",
+        model=decision.model,
+        role=decision.role,
+        mode=decision.mode,
+        reason=decision.reason,
+        is_specialist=decision.is_specialist,
+        console_message=f"[ROUTER] {decision.role} ({decision.model}) — {decision.reason}",
+    )
+    turn_client = ollama_client if decision.model == config.PRIMARY_MODEL else _build_routed_client(decision.model)
+    if decision.is_specialist:
+        logger.event(
+            "model_specialist_started",
+            model=decision.model,
+            role=decision.role,
+            console_message=f"[ROUTER] запуск специалиста {decision.role} ({decision.model})",
+        )
+    specialist_start = time.monotonic()
+
+    try:
+        answer = await asyncio.to_thread(
+            run_agent_loop,
+            session=session,
+            ollama_client=turn_client,
+            registry=request_registry,
+            logger=logger,
+            max_iterations=config.MAX_ITERATIONS,
+            max_context_messages=config.MAX_CONTEXT_MESSAGES,
+        )
+    except SienaInfraError as exc:
+        conversation_store.merge_message_metadata(
+            user_message["id"],
+            {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
+        )
+        logger.error("infra_error", console_message=f"[infra_error] {exc}", error=str(exc))
+        if decision.is_specialist:
+            logger.error(
+                "model_specialist_failed",
+                console_message=f"[ROUTER] специалист {decision.role} упал: {exc}",
+                model=decision.model,
+                role=decision.role,
+                error=str(exc),
+            )
+        await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
+        raise
+    except MaxIterationsReached as exc:
+        conversation_store.merge_message_metadata(
+            user_message["id"],
+            {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
+        )
+        await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
+        raise
+    except Exception as exc:
+        conversation_store.merge_message_metadata(
+            user_message["id"],
+            {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
+        )
+        await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
+        raise
+
+    if decision.is_specialist:
+        logger.event(
+            "model_specialist_completed",
+            model=decision.model,
+            role=decision.role,
+            duration_ms=round((time.monotonic() - specialist_start) * 1000),
+            console_message=f"[ROUTER] специалист {decision.role} завершил ход",
+        )
+
+    global _last_used_model, _last_used_role
+    _last_used_model, _last_used_role = decision.model, decision.role
+
+    logger.event("final_answer", content=answer, conversation_id=conversation_id)
+    await _apply_presence_transition(presence_service.clear_activity(_presence_settings()), logger)
+    assistant_message = conversation_store.append_message(conversation_id, "assistant", answer, model=decision.model)
+    conversation_store.merge_message_metadata(
+        user_message["id"],
+        {
+            "status": "completed",
+            "error": None,
+            "assistant_message_id": assistant_message["id"],
+            "updated_at": _now_iso(),
+            "ocr_results": ocr_results,
+            "vision_results": vision_results,
+        },
+    )
+    return {
+        "answer": answer,
+        "conversation_id": conversation_id,
+        "message_id": user_message["id"],
+        "assistant_message_id": assistant_message["id"],
+        "ocr_results": ocr_results,
+        "vision_results": vision_results,
+        "model_used": decision.model,
+        "model_role": decision.role,
+        "routing_reason": decision.reason,
+        "routing_mode": decision.mode,
+        "manual_only": decision.mode == "manual_active_chat_model",
+    }
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> dict[str, Any]:
     text = request.message.strip()
@@ -1879,272 +2158,52 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
         if vision_was_requested and not image_vision_context:
             vision_unavailable_note = _VISION_UNAVAILABLE_NOTE
 
-        memory_intent_note = ""
-        if wants_long_memory_save(text):
-            logger.event(
-                "memory_save_intent_detected",
-                text=text,
-                console_message="[MEMORY] похоже на явную просьбу сохранить в долговременную память",
-            )
-            memory_intent_note = (
-                "Похоже, пользователь явно просит сохранить что-то в долговременную память "
-                "(слова вроде «запомни», «сохрани», «добавь в память», «добавь что...», «запиши»). "
-                "Если это так — вызови long_memory_save с этим фактом, а не отвечай обычным текстом "
-                "без сохранения."
-            )
-
-        research_intent_note = ""
-        if wants_grounded_research(text):
-            logger.event(
-                "research_grounding_intent_detected",
-                text=text,
-                console_message="[RESEARCH] похоже на вопрос об идентичности/статусе, требующий проверки через web_search",
-            )
-            research_intent_note = (
-                "Похоже, пользователь спрашивает, кто/что это такое, или что произошло/происходит "
-                "с конкретным человеком, организацией или темой (возможно с указанием диапазона "
-                "лет). Твои внутренние знания могут быть устаревшими или неточными для подобных "
-                "вопросов, особенно если тема связана с политикой, конфликтами, военными "
-                "организациями или публичными фигурами. Прежде чем отвечать — вызови web_search, "
-                "даже если тебе кажется, что ты уже знаешь ответ. Не отвечай по памяти без проверки "
-                "для такого рода вопросов, и не утверждай, что использовала данные поиска, если "
-                "web_search не была вызвана."
-            )
-
-        nucleares_context = ""
-        if wants_nucleares_context(text):
-            logger.event(
-                "nucleares_context_injection_requested",
-                text=text[:200],
-                console_message="[NUCLEARES] user asked for game telemetry context",
-            )
-            try:
-                nucleares_status_result = await asyncio.to_thread(nucleares_client.status)
-            except Exception as exc:
-                nucleares_status_result = {"game": "nucleares", "connected": False, "error": str(exc), "attempted": []}
-            nucleares_context = build_nucleares_context(nucleares_status_result)
-            if nucleares_status_result.get("connected"):
-                logger.event(
-                    "nucleares_context_injected",
-                    base_url=nucleares_status_result.get("base_url"),
-                    parameter_count=nucleares_status_result.get("parameter_count"),
-                    chars=len(nucleares_context),
-                    normalized_keys=list(nucleares_status_result.get("normalized", {}).keys()),
-                    console_message=f"[NUCLEARES] game telemetry context added ({len(nucleares_context)} chars)",
-                )
-            else:
-                logger.event(
-                    "nucleares_context_unavailable",
-                    error=nucleares_status_result.get("error"),
-                    chars=len(nucleares_context),
-                    console_message=f"[NUCLEARES] unavailable: {nucleares_status_result.get('error')}",
-                )
-        else:
-            nucleares_skip_reason = nucleares_context_skip_reason(text)
-            if nucleares_skip_reason:
-                logger.event(
-                    "nucleares_context_skipped",
-                    reason=nucleares_skip_reason,
-                    text=text[:200],
-                    console_message=f"[NUCLEARES] context skipped: {nucleares_skip_reason}",
-                )
-
-        # Computer Awareness (0.2.3, Phase 1) — hidden [COMPUTER_CONTEXT]
-        # block, injected ONLY when the message explicitly asks about the
-        # computer / Siena's runtime (computer/computer_context.py), never
-        # on every request. Model-visible only — never persisted into the
-        # user message or conversation history (same discipline as the
-        # Nucleares context above).
-        computer_context = ""
-        if wants_computer_context(text):
-            if not config.ENABLE_COMPUTER_AWARENESS:
-                logger.event(
-                    "computer_awareness_disabled",
-                    console_message="[COMPUTER] context requested by message but the layer is disabled",
-                )
-            elif not config.ALLOW_COMPUTER_CONTEXT_IN_CHAT:
-                logger.event(
-                    "computer_context_skipped",
-                    reason="allow_computer_context_in_chat=false",
-                    console_message="[COMPUTER] context skipped: disabled by setting",
-                )
-            else:
-                logger.event("computer_status_requested", source="chat_context")
-                computer_state = await _collect_computer_state()
-                if computer_state is not None:
-                    computer_context = build_computer_context(computer_state, _computer_settings())
-                    logger.event(
-                        "computer_context_injected",
-                        chars=len(computer_context),
-                        warning_codes=[w.code for w in computer_state.warnings],
-                        console_message=f"[COMPUTER] context added to prompt ({len(computer_context)} chars)",
-                    )
-
-        language_preference_note = _LANGUAGE_PREFERENCE_NOTES.get(config.PREFERRED_RESPONSE_LANGUAGE)
-        combined_context = "\n\n".join(
-            b for b in (
-                attachment_context, image_ocr_context, image_vision_context,
-                vision_unavailable_note, memory_intent_note, research_intent_note,
-                nucleares_context, computer_context, language_preference_note,
-            ) if b
-        )
-        model_input = f"{text}\n\n{combined_context}" if combined_context and text else (combined_context or text)
-        session.add_user(model_input)
-        logger.event("user_message", content=text, conversation_id=conversation_id, attachment_count=len(attachments))
-
         if attachments:
             logger.event(
                 "attachment_send",
                 count=len(attachments),
                 types=[a.type for a in attachments],
                 names=[a.name for a in attachments],
-                console_message=f"[ATTACHMENT] РѕС‚РїСЂР°РІР»РµРЅРѕ {len(attachments)} РІР»РѕР¶РµРЅРёР№: {[a.type for a in attachments]}",
+                console_message=f"[ATTACHMENT] отправлено {len(attachments)} вложений: {[a.type for a in attachments]}",
             )
         if attachment_context:
             logger.event(
                 "attachment_context_injected",
                 count=sum(1 for a in attachments if a.type in _TEXT_ATTACHMENT_TYPES and a.content),
                 chars=len(attachment_context),
-                console_message=f"[ATTACHMENT] РєРѕРЅС‚РµРєСЃС‚ С„Р°Р№Р»РѕРІ РґРѕР±Р°РІР»РµРЅ РІ prompt ({len(attachment_context)} СЃРёРјРІРѕР»РѕРІ)",
+                console_message=f"[ATTACHMENT] контекст файлов добавлен в prompt ({len(attachment_context)} символов)",
             )
-        if image_ocr_context:
-            logger.event(
-                "ocr_context_injected",
-                count=sum(1 for a in attachments if a.type == "image" and a.data_url),
-                chars=len(image_ocr_context),
-                console_message=f"[OCR] РєРѕРЅС‚РµРєСЃС‚ РёР·РѕР±СЂР°Р¶РµРЅРёР№ РґРѕР±Р°РІР»РµРЅ РІ prompt ({len(image_ocr_context)} СЃРёРјРІРѕР»РѕРІ)",
-            )
-        if image_vision_context:
-            logger.event(
-                "vision_context_injected",
-                count=sum(1 for a in attachments if a.type == "image" and a.data_url),
-                chars=len(image_vision_context),
-                console_message=f"[VISION] context added to prompt ({len(image_vision_context)} chars)",
-            )
-        elif vision_unavailable_note:
-            logger.event(
-                "image_understanding_unavailable",
-                requested_text=text[:200],
-                console_message="[VISION] user asked to describe the image, but no vision result is available this turn",
-            )
-
-        request_registry, _, _, _ = build_registry(logger)
 
         # Specialist routing (Phase 4D) + manual active chat model (Phase 4E)
-        # — decided once, up front, from the user's own text, the current
-        # _active_chat_model, and (image/code routing pass, HANDOFF_v2.md)
-        # whether this turn already has independent code context: an
-        # attached code/text file, or OCR text from an attached screenshot
-        # that itself looks code/error-shaped. That context only ever widens
-        # matching to the narrow _AMBIGUOUS_CODE_PATTERNS set (e.g. "что за
-        # ошибка" said about an attached error screenshot) — a plain code
-        # request routes correctly with no attachment at all regardless.
-        # config.MANUAL_HEAVY_MODEL can ONLY reach this call via
-        # _active_chat_model, which is itself only ever set by the validated
-        # POST /api/models/active handler below — never inferred automatically.
-        has_code_context = any(att.type == "code" for att in attachments) or (
-            bool(image_ocr_context) and model_router.looks_like_code_or_error(image_ocr_context)
-        )
-        decision = model_router.route(text, active_chat_model=_active_chat_model, has_code_context=has_code_context)
-        logger.event(
-            "model_route_decision",
-            model=decision.model,
-            role=decision.role,
-            mode=decision.mode,
-            reason=decision.reason,
-            is_specialist=decision.is_specialist,
-            console_message=f"[ROUTER] {decision.role} ({decision.model}) вЂ” {decision.reason}",
-        )
-        turn_client = ollama_client if decision.model == config.PRIMARY_MODEL else _build_routed_client(decision.model)
-        if decision.is_specialist:
-            logger.event(
-                "model_specialist_started",
-                model=decision.model,
-                role=decision.role,
-                console_message=f"[ROUTER] Р·Р°РїСѓСЃРє СЃРїРµС†РёР°Р»РёСЃС‚Р° {decision.role} ({decision.model})",
-            )
-        specialist_start = time.monotonic()
+        # take an extra local-UI-only code-context signal here: an attached
+        # code/text file. run_chat_turn widens this further itself (OCR text
+        # from an attached screenshot that looks code/error-shaped), which
+        # applies identically to remote (phone) turns.
+        has_code_context = any(att.type == "code" for att in attachments)
 
         try:
-            answer = await asyncio.to_thread(
-                run_agent_loop,
-                session=session,
-                ollama_client=turn_client,
-                registry=request_registry,
+            turn_result = await run_chat_turn(
+                text=text,
+                conversation_id=conversation_id,
                 logger=logger,
-                max_iterations=config.MAX_ITERATIONS,
-                max_context_messages=config.MAX_CONTEXT_MESSAGES,
+                session=session,
+                user_message=user_message,
+                attachment_context=attachment_context,
+                image_ocr_context=image_ocr_context,
+                image_vision_context=image_vision_context,
+                ocr_results=ocr_results,
+                vision_results=vision_results,
+                vision_unavailable_note=vision_unavailable_note,
+                has_code_context=has_code_context,
             )
         except SienaInfraError as exc:
-            conversation_store.merge_message_metadata(
-                user_message["id"],
-                {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
-            )
-            logger.error("infra_error", console_message=f"[infra_error] {exc}", error=str(exc))
-            if decision.is_specialist:
-                logger.error(
-                    "model_specialist_failed",
-                    console_message=f"[ROUTER] СЃРїРµС†РёР°Р»РёСЃС‚ {decision.role} СѓРїР°Р»: {exc}",
-                    model=decision.model,
-                    role=decision.role,
-                    error=str(exc),
-                )
-            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except MaxIterationsReached as exc:
-            conversation_store.merge_message_metadata(
-                user_message["id"],
-                {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
-            )
-            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        except Exception as exc:
-            conversation_store.merge_message_metadata(
-                user_message["id"],
-                {"status": "failed", "error": str(exc), "updated_at": _now_iso()},
-            )
-            await _apply_presence_transition(presence_service.report_error(str(exc), _presence_settings()), logger)
-            raise
 
-        if decision.is_specialist:
-            logger.event(
-                "model_specialist_completed",
-                model=decision.model,
-                role=decision.role,
-                duration_ms=round((time.monotonic() - specialist_start) * 1000),
-                console_message=f"[ROUTER] СЃРїРµС†РёР°Р»РёСЃС‚ {decision.role} Р·Р°РІРµСЂС€РёР» С…РѕРґ",
-            )
-
-        global _last_used_model, _last_used_role
-        _last_used_model, _last_used_role = decision.model, decision.role
-
-        logger.event("final_answer", content=answer, conversation_id=conversation_id)
-        await _apply_presence_transition(presence_service.clear_activity(_presence_settings()), logger)
-        assistant_message = conversation_store.append_message(conversation_id, "assistant", answer, model=decision.model)
-        conversation_store.merge_message_metadata(
-            user_message["id"],
-            {
-                "status": "completed",
-                "error": None,
-                "assistant_message_id": assistant_message["id"],
-                "updated_at": _now_iso(),
-                "ocr_results": ocr_results,
-                "vision_results": vision_results,
-            },
-        )
         return {
-            "answer": answer,
-            "conversation_id": conversation_id,
-            "message_id": user_message["id"],
-            "assistant_message_id": assistant_message["id"],
+            **turn_result,
             "attachments": [_public_attachment(a) for a in persisted_attachments],
-            "ocr_results": ocr_results,
-            "vision_results": vision_results,
-            "model_used": decision.model,
-            "model_role": decision.role,
-            "routing_reason": decision.reason,
-            "routing_mode": decision.mode,
-            "manual_only": decision.mode == "manual_active_chat_model",
         }
 
 
@@ -3044,6 +3103,169 @@ async def computer_summary() -> dict[str, Any]:
     if state is None:
         return {"enabled": True, "summary": "Не удалось собрать состояние компьютера", "code": "metrics_unavailable", "warning_count": 0}
     return {"enabled": True, **ComputerService.summarize(state)}
+
+
+# ─── Siena Remote (0.6.0): chat/attachment/tts bridge ──────────────────────
+# Wires the SAME production objects constructed above (run_chat_turn,
+# ocr_service, vision_service, translator_service, voice_service,
+# conversation_store, session_store, chat_lock, base_logger, trace_hub) into
+# RemoteChatService/RemoteTtsService, then registers them on the Home Gateway
+# agent. Placed here (after chat()/the image helpers/_translate_text/
+# voice_service all exist) purely so this reads top-to-bottom; the agent
+# itself only starts using them once set_application_handler() below runs,
+# which happens at import time, well before the FastAPI lifespan starts it.
+
+
+def _remote_diagnostic_event(event_type: str, fields: dict[str, Any]) -> None:
+    """DiagnosticLogger-shaped events for the remote chat/tts bridge — every
+    field here is request_id/name/count/status only, never message text,
+    deltas, OCR/translation content, or audio bytes (see remote_chat_service.py
+    / remote_tts_service.py — content never reaches this function at all)."""
+    base_logger.event(event_type, **fields)
+    try:
+        asyncio.get_running_loop().create_task(trace_hub.broadcast({"event": event_type, **fields}))
+    except RuntimeError:
+        pass
+
+
+async def _process_remote_image(
+    *,
+    image_bytes: bytes,
+    mime_type: str,
+    action: str,
+    user_text: str,
+    target_language: str | None,
+    logger: BroadcastLogger,
+    image_index: int,
+) -> dict[str, Any]:
+    """Siena Remote image pipeline — runs the REAL qwen2.5vl/glm-ocr/
+    translategemma-strict:4b service instances (same as the local UI) against
+    an EXPLICIT phone-chosen action, never running everything blindly:
+    auto = vision always + OCR only if it finds meaningful text; analyze =
+    vision only; ocr = OCR only; translate = OCR then translate the OCR text
+    (target_language required — already validated upstream)."""
+    name = f"remote_image_{image_index + 1}"
+    payload = base64.b64encode(image_bytes).decode("ascii")
+    result: dict[str, Any] = {"ocr_context": "", "vision_context": "", "ocr_result": None, "vision_result": None}
+
+    run_ocr = action in ("auto", "ocr", "translate") and config.ENABLE_OCR
+    run_vision = action in ("auto", "analyze") and config.ENABLE_IMAGE_UNDERSTANDING
+
+    ocr_extracted_text = ""
+    if run_ocr:
+        logger.event("remote_ocr_started", name=name, console_message=f"[OCR] запуск glm-ocr для {name}")
+        try:
+            ocr_raw = await asyncio.to_thread(ocr_service.extract_text, payload)
+        except (OcrModelNotInstalledError, OcrUnavailableError) as exc:
+            result["ocr_result"] = {"name": name, "status": "failed", "error": str(exc)}
+        else:
+            cleaned = clean_ocr_text(ocr_raw["text"])
+            quality = ocr_quality(ocr_raw["text"], cleaned, config.OCR_MIN_USEFUL_CHARS)
+            if quality["quality"] == "low_quality":
+                result["ocr_result"] = {"name": name, "status": "low_quality", "chars": 0, "quality": quality["quality"]}
+            else:
+                ocr_extracted_text = cleaned[: config.OCR_MAX_EXTRACTED_CHARS]
+                result["ocr_result"] = {
+                    "name": name, "status": "extracted", "chars": len(ocr_extracted_text),
+                    "preview": ocr_extracted_text[: config.OCR_PREVIEW_CHARS], "quality": quality["quality"],
+                }
+                if action != "translate":
+                    result["ocr_context"] = f"[{name} | {mime_type}]\n```text\n{ocr_extracted_text}\n```\n\n{_IMAGE_OCR_ONLY_DISCLAIMER}"
+
+    if action == "translate":
+        if not ocr_extracted_text:
+            result["ocr_context"] = f"[{name}] OCR found no readable text to translate."
+        elif target_language is None:
+            result["ocr_context"] = f"[{name} | {mime_type}]\n```text\n{ocr_extracted_text}\n```"
+        else:
+            logger.event(
+                "remote_translation_started", name=name, target_language=target_language,
+                console_message=f"[TRANSLATOR] запуск ({target_language}) для {name}",
+            )
+            translation = await asyncio.to_thread(
+                _translate_text, ocr_extracted_text, config.TRANSLATOR_DEFAULT_SOURCE, target_language, True, logger,
+            )
+            if translation["ok"]:
+                result["ocr_context"] = (
+                    f"[{name} | {mime_type} | original]\n```text\n{ocr_extracted_text}\n```\n\n"
+                    f"[{name} | translated -> {target_language}]\n```text\n{translation['translated_text']}\n```"
+                )
+            else:
+                result["ocr_context"] = f"[{name} | {mime_type} | translation failed, showing original]\n```text\n{ocr_extracted_text}\n```"
+
+    if run_vision:
+        logger.event("remote_image_analysis_started", name=name, console_message=f"[VISION] запуск qwen2.5vl для {name}")
+        try:
+            vision_raw = await asyncio.to_thread(vision_service.describe_image, payload, user_text)
+        except (VisionModelNotInstalledError, VisionUnavailableError) as exc:
+            result["vision_result"] = {"name": name, "status": "failed", "error": str(exc)}
+        else:
+            description = vision_raw["text"]
+            if len(description) > config.IMAGE_UNDERSTANDING_MAX_OUTPUT_CHARS:
+                description = description[: config.IMAGE_UNDERSTANDING_MAX_OUTPUT_CHARS] + "\n...(truncated)"
+            result["vision_result"] = {"name": name, "status": "described", "chars": len(description), "preview": description[:300]}
+            if description:
+                result["vision_context"] = f"[{name} | {mime_type}]\n{description}\n\n{_VISION_GROUNDING_NOTE}"
+
+    return result
+
+
+async def _remote_tts_synthesize(text: str) -> dict[str, Any]:
+    """Current production voice/settings only — the phone never selects a
+    provider/model/path (see RemoteTtsService)."""
+    return await asyncio.to_thread(voice_service.synthesize, text, None)
+
+
+def _remote_sanitize_text_for_tts(text: str) -> str:
+    return sanitize_text_for_tts(text, strip_all_numbers=config.TTS_STRIP_ALL_NUMBERS)
+
+
+_remote_attachment_client = AttachmentClient(
+    http_base_url_provider=lambda: relay_http_base_url(config.REMOTE_GATEWAY_RELAY_URL),
+    credentials_provider=lambda: (
+        (_gateway_credentials_store.gateway_id(), _gateway_credentials_store.decrypt_token())
+        if _gateway_credentials_store.is_configured()
+        else None
+    ),
+    # Production is always wss://relay.sienaai.ru (standard TLS verification)
+    # — RemoteGatewayService itself is constructed with the same production-
+    # only default above (allow_insecure_localhost is a test-only override,
+    # see tests/test_remote_gateway.py, never wired to a live config flag).
+    verify_tls=True,
+)
+
+remote_chat_service = RemoteChatService(
+    run_chat_turn=run_chat_turn,
+    conversation_store=conversation_store,
+    build_session=session_store.build_session,
+    create_conversation=conversation_store.create_conversation,
+    logger_factory=lambda conversation_id: BroadcastLogger(
+        base_logger, trace_hub, asyncio.get_running_loop(), conversation_store, conversation_id
+    ),
+    chat_lock=chat_lock,
+    attachment_client=_remote_attachment_client,
+    process_remote_image=_process_remote_image,
+    max_image_bytes=config.MAX_IMAGE_ATTACHMENT_BYTES,
+    on_diagnostic=_remote_diagnostic_event,
+)
+
+remote_tts_service = RemoteTtsService(
+    synthesize=_remote_tts_synthesize,
+    sanitize_text=_remote_sanitize_text_for_tts,
+    attachment_client=_remote_attachment_client,
+    on_diagnostic=_remote_diagnostic_event,
+)
+
+
+async def _handle_remote_application_message(message: dict[str, Any], send: Any, gateway_id: str) -> None:
+    message_type = message.get("type")
+    if message_type in ("chat.request", "chat.cancel"):
+        await remote_chat_service.handle_message(message, send, gateway_id)
+    elif message_type == "tts.request":
+        await remote_tts_service.handle_message(message, send, gateway_id)
+
+
+remote_gateway_service.set_application_handler(_handle_remote_application_message)
 
 
 # ─── Siena Remote Presence: Home Gateway (0.2.3, remote_gateway/) ──────────
