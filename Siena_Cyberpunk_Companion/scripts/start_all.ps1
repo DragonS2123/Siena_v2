@@ -1,11 +1,11 @@
-param([ValidateSet('exploration','combat','critical_health','vehicle','companion_stuck')][string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
+param([ValidateSet('exploration','combat','critical_health','vehicle','companion_stuck','v03_readonly')][string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Backend = Join-Path $PSScriptRoot 'start_backend.ps1'
 $Frontend = Join-Path $PSScriptRoot 'start_frontend.ps1'
 $Simulator = Join-Path $PSScriptRoot 'start_simulator.ps1'
 
-Write-Host 'Siena Cyberpunk Observer v0.1'
+Write-Host 'Siena Cyberpunk Companion v0.3 (read-only)'
 Write-Host 'Backend: http://127.0.0.1:8765'
 Write-Host 'UI:      http://127.0.0.1:5173'
 Write-Host "Scenario: $Scenario"

@@ -10,10 +10,23 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
-    event_buffer_size: int = Field(default=1000, ge=20, le=10000)
+    event_buffer_size: int = Field(default=500, ge=20, le=10000)
+    reaction_buffer_size: int = Field(default=200, ge=20, le=5000)
     websocket_queue_size: int = Field(default=256, ge=8, le=2048)
-    damage_window_seconds: float = Field(default=0.5, gt=0)
+    telemetry_expected_rate_hz: float = Field(default=4.0, gt=0, le=1000)
+    damage_window_seconds: float = Field(default=1.5, gt=0)
     enemy_debounce_seconds: float = Field(default=5.0, gt=0)
+    same_event_cooldown_seconds: float = Field(default=60.0, ge=0)
+    general_reaction_cooldown_seconds: float = Field(default=20.0, ge=0)
+    health_low_threshold_percent: float = Field(default=25.0, gt=0, lt=100)
+    health_low_recovery_percent: float = Field(default=35.0, gt=0, le=100)
+    health_critical_threshold_percent: float = Field(default=10.0, gt=0, lt=100)
+    heal_threshold_percent: float = Field(default=5.0, gt=0, le=100)
+    idle_timeout_seconds: float = Field(default=60.0, gt=0)
+    player_position_epsilon: float = Field(default=0.5, gt=0)
+    session_disconnect_timeout_seconds: float = Field(default=10.0, gt=0)
+    reactions_enabled: bool = True
+    reaction_provider: Literal["template", "disabled"] = "template"
     companion_too_far_meters: float = Field(default=20.0, gt=0)
     companion_stuck_seconds: float = Field(default=5.0, gt=0)
     companion_movement_epsilon: float = Field(default=0.25, gt=0)

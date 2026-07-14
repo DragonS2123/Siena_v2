@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.models.game_state import GameState
+from app.domain.priorities import PRIORITY_RANK
 from app.services.bridge_registry import BridgeUnavailable
 from app.services.state_store import SequenceConflict
 
@@ -31,18 +34,31 @@ async def ingest_state(state: GameState, request: Request) -> dict:
     if source_changed:
         previous = None
     changes = services.diff(previous, state)
-    generated = services.synthesizer.synthesize(previous, state, changes)
+    bridge_status = await services.bridge_registry.status()
+    capabilities = bridge_status.capabilities if state.source == "cet" else None
+    event_clock = state.captured_at
+    if event_clock.tzinfo is None:
+        event_clock = event_clock.replace(tzinfo=timezone.utc)
+    generated = services.synthesizer.synthesize(
+        previous,
+        state,
+        changes,
+        now=event_clock,
+        capabilities=capabilities,
+        observed_at=datetime.now(timezone.utc),
+    )
     accepted = services.filter.process(generated)
     await services.bus.publish("state", services.state_payload(state))
     commands = []
-    for event in accepted:
-        await services.bus.publish("event", event)
-        command = await services.scheduler.consider(event)
+    reactions = []
+    for event in sorted(accepted, key=lambda item: PRIORITY_RANK[item.priority]):
+        reaction, command = await services.publish_event(event)
+        if reaction:
+            reactions.append(reaction)
         if command:
             commands.append(command)
-            await services.bus.publish("command", command)
     await services.bus.publish("bridge_status", await services.bridge_registry.status())
-    return {"accepted": True, "active": True, "active_source": active_source, "session_id": state.session_id, "sequence": state.sequence, "events_published": len(accepted), "commands_created": len(commands)}
+    return {"accepted": True, "active": True, "active_source": active_source, "session_id": state.session_id, "sequence": state.sequence, "events_published": len(accepted), "reactions_created": len(reactions), "commands_created": len(commands)}
 
 
 @router.get("/latest", response_model=GameState | None)

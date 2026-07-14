@@ -1,34 +1,29 @@
-# Siena Cyberpunk Observer v0.2
+# Siena Cyberpunk Companion v0.3
 
-An isolated observer that accepts either simulated state or read-only Cyber Engine Tweaks telemetry, turns meaningful changes into events, filters noise, produces deterministic display-only decisions, and renders the result in a standalone React panel.
+Read-only companion pipeline for Cyberpunk 2077. It accepts the existing v0.2 CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, applies aggregation and cooldowns, creates optional template text reactions, and publishes bounded history through REST and the existing WebSocket.
 
-The v0.2 bridge is read-only. It does **not** create/control NPCs, execute commands in game, modify quests, call Siena_v2, use Siena memory, Ollama, Whisper, or TTS. All backend state is process-local and bounded.
+It does **not** send commands to Cyberpunk, control the player/NPCs, call Siena Core/Ollama, or use TTS. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod.
 
-## Architecture
+## Pipeline
 
 ```text
-JSON scenario -> Simulator (250 ms) -> POST telemetry -> StateStore
-                                                  |-> StateDiff -> EventSynthesizer
-                                                  |                -> EventFilter
-                                                  |                   -> EventBus -> WS/REST -> React UI
-                                                  |                   -> DecisionScheduler -> commands
-CET Bridge implements the telemetry producer contract ----------------^
-Future Siena Core implements SienaCoreClient (currently disabled) -----^
+CET bridge or simulator
+  -> POST /api/v1/telemetry/state
+  -> StateStore (source/session sequence guard)
+  -> StateDiff
+  -> EventSynthesizer (capability-aware detectors + session/idle latches)
+  -> EventFilter (damage aggregation + per-event cooldown)
+  -> ReactionPlanner (template or disabled, priority + cooldown)
+  -> bounded EventBus
+  -> REST + existing /ws
+  -> React Game Events / Siena Reactions
 ```
 
-The CET producer is now implemented under `bridge/cet/`, but requires a real game installation and manual runtime verification. See [CET_INSTALLATION.md](CET_INSTALLATION.md), [CET_TROUBLESHOOTING.md](CET_TROUBLESHOOTING.md), and [bridge/cet/README.md](bridge/cet/README.md).
+The existing v0.2 bridge remains unchanged. `BridgeRegistry` still negotiates protocol `1.0`, gives live CET priority in `auto`, reports `source_conflict`, and exposes capabilities. A CET capability reported as unavailable is never interpreted as a false game state. Health and position alone are sufficient for the v0.3 detectors.
 
-The backend is the source of truth. `StateStore` enforces monotonically increasing sequence numbers within a session. Events live in a bounded ring buffer. Each WebSocket client has a bounded queue and slow clients lose their oldest pending update. The 500 ms damage window is delayed and emitted as one aggregate. Thresholds fire only on boundary crossings. The deterministic scheduler is an architectural stand-in, not an LLM.
+## Install and run
 
-## Requirements
-
-- Windows PowerShell 5.1+
-- Python 3.12+
-- Node.js 20+ and npm
-
-## Install
-
-From this directory:
+Requirements: Windows PowerShell 5.1+, Python 3.12+, Node.js 20+.
 
 ```powershell
 python -m venv .venv
@@ -38,107 +33,126 @@ npm.cmd install
 Set-Location ..
 ```
 
-If the Windows `python` alias is unavailable, replace it with an explicit Python 3.12 executable path.
-
-## Run
-
-Run everything with a scenario:
-
-```powershell
-.\scripts\start_all.ps1 -Scenario combat
-.\scripts\start_all.ps1 -Scenario companion_stuck -Loop -Speed 2.0
-```
-
-Or run each process in its own terminal:
+Run processes in separate terminals:
 
 ```powershell
 .\scripts\start_backend.ps1
 .\scripts\start_frontend.ps1
-.\scripts\start_simulator.ps1 -Scenario critical_health -Speed 0.5
+.\scripts\start_simulator.ps1 -Scenario v03_readonly -Speed 20
 ```
 
-Addresses: backend/API `http://127.0.0.1:8765`, WebSocket `ws://127.0.0.1:8765/ws`, UI `http://127.0.0.1:5173`.
-
-Direct simulator invocation from `simulator/` is also supported:
+Or launch all three:
 
 ```powershell
-..\.venv\Scripts\python.exe main.py --scenario combat --speed 2.0 --loop
+.\scripts\start_all.ps1 -Scenario v03_readonly -Speed 20
 ```
 
-Available scenarios are `exploration`, `combat`, `critical_health`, `vehicle`, and `companion_stuck`.
+Backend: `http://127.0.0.1:8765`; UI: `http://127.0.0.1:5173`; WebSocket: `ws://127.0.0.1:8765/ws`.
+
+For the real game, start the backend and frontend, install/start the already documented CET bridge, and do not start the simulator. See [CET_INSTALLATION.md](CET_INSTALLATION.md), [CET_TROUBLESHOOTING.md](CET_TROUBLESHOOTING.md), and [bridge/cet/README.md](bridge/cet/README.md). The simulator performs a bridge-status preflight and refuses to run when `configured_source=auto` already has a connected CET source.
+
+## Normalized v0.3 events
+
+- Session: `session_started`, `session_ended`
+- Health: `player_damaged`, `health_low`, `health_critical`, `player_healed`
+- Optional capability transitions: `combat_started`, `combat_ended`, `vehicle_entered`, `vehicle_exited`
+- Movement: `player_idle`, `player_moved_after_idle`
+
+Existing v0.1/v0.2 events remain available for compatibility. Each event has a unique `event_id`, UTC `created_at`, source/session/sequence, enum-backed severity, summary, bounded data payload, legacy priority, and deduplication key. The protocol schema is [protocol/game_event.schema.json](protocol/game_event.schema.json).
+
+Defaults: damage is aggregated for 1.5 seconds; low health is latched at 25% until recovery above 35%; critical health is latched at 10%; healing requires a 5% single-state gain; idle starts after 60 seconds under a 0.5-unit movement epsilon; session end occurs after 10 seconds without accepted active telemetry. History is capped at 500 events and 200 reactions.
+
+## Reactions
+
+`TemplateReactionProvider` is the default. It reacts only to mapped meaningful events, not every event. `ReactionPlanner` considers priority, a 20-second general cooldown and 60-second same-event cooldown; critical events bypass the general cooldown. `DisabledReactionProvider` creates no reactions. Reactions are text-only and use [protocol/siena_reaction.schema.json](protocol/siena_reaction.schema.json).
+
+```powershell
+$env:SIENA_CP_REACTIONS_ENABLED='true'
+$env:SIENA_CP_REACTION_PROVIDER='template' # template | disabled
+```
+
+No provider imports Siena_v2 or starts an external model.
+
+## REST API
+
+Existing endpoints remain intact. v0.3 adds:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/events` | `limit`, `event_type`, `severity`, `session_id` filters |
+| GET | `/api/v1/events/latest` | latest matching event or `null` |
+| GET | `/api/v1/reactions` | `limit`, optional `event_type` |
+| GET | `/api/v1/reactions/latest` | latest matching reaction or `null` |
+| GET | `/api/v1/planner/status` | enabled/provider/counts/timestamps/cooldown |
+
+All responses use Pydantic response models; no internal deque is exposed.
+
+## WebSocket
+
+The existing `/ws` continues sending legacy `state`, `event`, `command`, `status`, and `bridge_status` envelopes. v0.3 additionally sends:
+
+```json
+{"type":"game_event","payload":{}}
+{"type":"siena_reaction","payload":{}}
+```
+
+For compatibility the new envelopes also contain the same object in `data`. Each client owns a bounded queue; a disconnected or slow client cannot block telemetry ingestion. The React client loads REST history first, merges WebSocket updates by unique ID, and caps local history.
+
+## Simulator scenarios
+
+Existing scenarios: `exploration`, `combat`, `critical_health`, `vehicle`, `companion_stuck`.
+
+`v03_readonly` covers a new session, movement, multiple small hits, strong damage, low/critical thresholds, healing, combat/vehicle transitions, 60 seconds idle, movement after idle, and then exits. Backend timeout subsequently creates `session_ended`. At `-Speed 20`, the complete scenario plus disconnect timeout is convenient for manual verification.
+
+## Configuration
+
+All backend variables use prefix `SIENA_CP_`:
+
+| Setting | Default |
+|---|---:|
+| `TELEMETRY_EXPECTED_RATE_HZ` | 4 |
+| `DAMAGE_WINDOW_SECONDS` | 1.5 |
+| `SAME_EVENT_COOLDOWN_SECONDS` | 60 |
+| `GENERAL_REACTION_COOLDOWN_SECONDS` | 20 |
+| `HEALTH_LOW_THRESHOLD_PERCENT` | 25 |
+| `HEALTH_LOW_RECOVERY_PERCENT` | 35 |
+| `HEALTH_CRITICAL_THRESHOLD_PERCENT` | 10 |
+| `HEAL_THRESHOLD_PERCENT` | 5 |
+| `IDLE_TIMEOUT_SECONDS` | 60 |
+| `PLAYER_POSITION_EPSILON` | 0.5 |
+| `SESSION_DISCONNECT_TIMEOUT_SECONDS` | 10 |
+| `EVENT_BUFFER_SIZE` | 500 |
+| `REACTION_BUFFER_SIZE` | 200 |
+| `REACTIONS_ENABLED` | true |
+| `REACTION_PROVIDER` | template |
+
+The v0.2 bridge/source/CORS/companion settings remain supported.
 
 ## Test and build
 
 ```powershell
 Set-Location .\backend
-..\.venv\Scripts\python.exe -m pytest
+..\.venv\Scripts\python.exe -m pytest -q
 Set-Location ..\frontend
 npm.cmd run check:lua
 npm.cmd run build
 ```
 
-## HTTP API
+## Manual v0.3 check
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Liveness and version |
-| GET | `/api/v1/status` | Session, packet, scheduler, integration status |
-| POST | `/api/v1/telemetry/state` | Validate and accept a `GameState`; returns 409 for stale/duplicate sequence |
-| GET | `/api/v1/telemetry/latest` | Latest state or `null` |
-| GET | `/api/v1/events?limit=200` | Newest-first bounded event history |
-| POST | `/api/v1/commands` | Validate/store a manual command |
-| GET | `/api/v1/commands/current` | Current non-expired command or `null` |
-| WS | `/ws` | State, event, command, and one-second status heartbeat |
-| POST | `/api/v1/bridge/hello` | Register version/capabilities and negotiate protocol |
-| POST | `/api/v1/bridge/heartbeat` | Refresh liveness and transport diagnostics |
-| GET | `/api/v1/bridge/status` | Bridge, source conflict, rate, latency, and capabilities |
-| POST | `/api/v1/bridge/disconnect` | Mark a bridge intentionally disconnected |
+1. Start backend and frontend.
+2. Start `v03_readonly -Speed 20`, or start Cyberpunk with the CET bridge.
+3. In the UI verify bridge/live telemetry remains visible.
+4. Take damage (or let the scenario run) and verify one aggregated `player_damaged` event.
+5. Verify `health_low` and `health_critical` appear only on threshold entry.
+6. Verify a mapped Siena text reaction appears without audio/model startup.
+7. Keep health below the threshold and confirm events do not repeat each telemetry frame.
+8. Stop telemetry and wait 10 seconds; verify `session_ended` through REST/UI.
 
-Invalid JSON/model data returns FastAPI's structured 422 response. Sequence conflicts return 409 with the latest accepted sequence in the detail message.
+## Known limitations
 
-## WebSocket protocol
-
-Every frame is a JSON envelope:
-
-```json
-{"type":"state","data":{}}
-{"type":"event","data":{}}
-{"type":"command","data":{}}
-{"type":"status","data":{}}
-```
-
-The UI performs a REST bootstrap, reconnects with capped exponential backoff, and remains usable if the backend disappears. Its local event view is capped at 200 entries.
-
-## Synthesized events
-
-- Session: `game_started`, `game_loaded`, `game_paused`, `game_resumed`, `game_stopped`
-- Combat: `combat_started`, `combat_ended`, `enemy_detected`, `enemy_count_changed`
-- Player: `player_damaged`, `player_health_below_50`, `player_health_critical`, `player_recovered`, `player_entered_vehicle`, `player_exited_vehicle`
-- Companion: `companion_appeared`, `companion_disappeared`, `companion_too_far`, `companion_regrouped`, `companion_stuck`, `companion_health_critical`, `companion_intent_changed`
-- Location: `district_changed`
-
-`enemy_detected` is debounced for five seconds per threat key. Rapid player damage is aggregated for 500 ms. Health and distance events are boundary-triggered. A companion is stuck after five seconds without meaningful distance progress while marked moving with `follow` or `regroup` intent.
-
-Scheduler mapping: critical player health -> `retreat`; combat start -> `protect`; companion too far -> `regroup`; combat end -> `follow`. P0 can interrupt a lower-priority active command. Commands expire and manual commands use the same strict schema.
-
-## Configuration
-
-Backend settings use the `SIENA_CP_` prefix, for example `SIENA_CP_PORT=8766`, `SIENA_CP_EVENT_BUFFER_SIZE=500`, `SIENA_CP_COMPANION_TOO_FAR_METERS=25`. The frontend accepts `VITE_API_URL`. Defaults bind only to `127.0.0.1`; CORS allows only the local Vite origins.
-
-## Current limitations
-
-- Memory and state disappear when the backend exits; there is no SQLite database.
-- The scheduler is deterministic and commands are displayed but not executed in a game.
-- Simulator scenario steps apply discrete patches; it is a protocol/load harness, not a game physics model.
-- JSON Schema documents mirror the versioned wire fields; cross-field lifecycle and health invariants are enforced by the Pydantic v2 models.
-- This version has no authentication because it is localhost-only.
-- CET game calls and actual game launch remain awaiting manual verification.
-- Pause and district capabilities are intentionally unavailable in v0.2.
-
-## Future Siena_v2 connection
-
-Implement a real `SienaCoreClient` adapter in the observer process. Pass accepted high-value events and a bounded state snapshot to Siena Core, translate its validated decision into `CompanionCommand`, apply timeouts/circuit breaking, and retain the deterministic scheduler as fallback. Do not import or copy Siena_v2 storage.
-
-## CET bridge scope
-
-The implemented CET producer reads only explicitly supported game facts, maps them to protocol v1 `GameState`, owns a stable session ID and monotonic sequence, and samples at 250 ms. Capability negotiation, reconnect backoff, and a one-state pending buffer are implemented. Game commands and acknowledgements remain deliberately out of scope.
+- History and latches are process-local and reset when the backend restarts.
+- Real CET currently proves health and position; other capabilities remain unavailable unless the bridge explicitly reports them.
+- Template reactions are deterministic and intentionally small; there is no Siena Core adapter in v0.3.
+- Legacy display-only commands remain for v0.2 API/UI compatibility but never reach the game.
+- The simulator is a protocol harness, not game physics, and will not run alongside an active CET source in automatic mode.

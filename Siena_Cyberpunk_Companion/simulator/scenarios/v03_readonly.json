@@ -1,0 +1,18 @@
+{
+  "initial": {"schema_version":"1.0","session_id":"replaced","sequence":0,"captured_at":"2026-01-01T00:00:00Z","game":{"running":true,"loaded":true,"paused":false},"player":{"health":100,"max_health":100,"in_combat":false,"in_vehicle":false,"position":{"x":0,"y":0,"z":0}},"companion":{"present":false,"health":100,"max_health":100,"distance_to_player":0,"current_intent":"follow","moving":false},"environment":{"district":"Watson","visible_hostiles":0,"highest_threat_id":null}},
+  "steps": [
+    {"duration":0.5,"patch":{}},
+    {"duration":0.5,"patch":{"player":{"position":{"x":2,"y":0,"z":0}}}},
+    {"duration":0.25,"patch":{"player":{"health":97}}},
+    {"duration":0.25,"patch":{"player":{"health":93}}},
+    {"duration":0.25,"patch":{"player":{"health":88}}},
+    {"duration":0.5,"patch":{"player":{"in_combat":true,"health":60}}},
+    {"duration":0.5,"patch":{"player":{"health":24}}},
+    {"duration":0.5,"patch":{"player":{"health":9}}},
+    {"duration":0.5,"patch":{"player":{"health":45}}},
+    {"duration":0.5,"patch":{"player":{"in_combat":false,"in_vehicle":true}}},
+    {"duration":0.5,"patch":{"player":{"in_vehicle":false}}},
+    {"duration":61,"patch":{}},
+    {"duration":0.5,"patch":{"player":{"position":{"x":4,"y":0,"z":0}}}}
+  ]
+}

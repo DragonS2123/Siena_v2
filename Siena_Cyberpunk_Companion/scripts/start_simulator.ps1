@@ -1,4 +1,4 @@
-param([ValidateSet('exploration','combat','critical_health','vehicle','companion_stuck')][string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
+param([ValidateSet('exploration','combat','critical_health','vehicle','companion_stuck','v03_readonly')][string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $Root '.venv\Scripts\python.exe'

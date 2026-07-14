@@ -5,7 +5,7 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "siena-cyberpunk-observer", "version": "0.2.0"}
+    return {"status": "ok", "service": "siena-cyberpunk-companion", "version": "0.3.0"}
 
 
 @router.get("/api/v1/status")
@@ -20,6 +20,8 @@ async def status(request: Request) -> dict:
         "last_sequence": latest.sequence if latest else None,
         "last_packet_at": latest.captured_at if latest else None,
         "event_count": len(services.bus.events(services.settings.event_buffer_size)),
+        "reaction_count": len(services.bus.reactions(services.settings.reaction_buffer_size)),
+        "planner": (await services.reaction_planner.status()).model_dump(mode="json"),
         "scheduler": await services.scheduler.status(),
         "active_source": observer_status["active_source"],
         "bridge": observer_status["bridge"],

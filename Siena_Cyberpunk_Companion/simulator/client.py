@@ -10,5 +10,10 @@ class TelemetryClient:
         response.raise_for_status()
         return response.json()
 
+    async def bridge_status(self) -> dict:
+        response = await self._client.get("/api/v1/bridge/status")
+        response.raise_for_status()
+        return response.json()
+
     async def close(self) -> None:
         await self._client.aclose()
