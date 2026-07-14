@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "game_state.schema.json",
+  "title": "GameState v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "session_id", "sequence", "captured_at", "game", "player", "companion", "environment"],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sequence": {"type": "integer", "minimum": 0},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "source": {"type": "string", "enum": ["simulator", "cet"], "default": "simulator"},
+    "bridge_version": {"type": ["string", "null"], "maxLength": 32, "default": null},
+    "game": {"$ref": "#/$defs/game"},
+    "player": {"$ref": "#/$defs/player"},
+    "companion": {"$ref": "#/$defs/companion"},
+    "environment": {"$ref": "#/$defs/environment"}
+  },
+  "$defs": {
+    "position": {
+      "type": "object", "additionalProperties": false, "required": ["x", "y", "z"],
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}
+    },
+    "game": {
+      "type": "object", "additionalProperties": false, "required": ["running", "loaded", "paused"],
+      "properties": {"running": {"type": "boolean"}, "loaded": {"type": "boolean"}, "paused": {"type": "boolean"}}
+    },
+    "player": {
+      "type": "object", "additionalProperties": false,
+      "required": ["health", "max_health", "in_combat", "in_vehicle", "position"],
+      "properties": {
+        "health": {"type": "number", "minimum": 0}, "max_health": {"type": "number", "exclusiveMinimum": 0},
+        "in_combat": {"type": "boolean"}, "in_vehicle": {"type": "boolean"}, "position": {"$ref": "#/$defs/position"}
+      }
+    },
+    "companion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["present", "health", "max_health", "distance_to_player", "current_intent", "moving"],
+      "properties": {
+        "present": {"type": "boolean"}, "health": {"type": "number", "minimum": 0}, "max_health": {"type": "number", "exclusiveMinimum": 0},
+        "distance_to_player": {"type": "number", "minimum": 0}, "current_intent": {"type": "string", "minLength": 1, "maxLength": 64}, "moving": {"type": "boolean"}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["district", "visible_hostiles", "highest_threat_id"],
+      "properties": {
+        "district": {"type": "string", "minLength": 1, "maxLength": 128}, "visible_hostiles": {"type": "integer", "minimum": 0},
+        "highest_threat_id": {"type": ["string", "null"], "maxLength": 128}
+      }
+    }
+  }
+}

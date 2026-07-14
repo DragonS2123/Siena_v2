@@ -1,0 +1,7 @@
+{
+  "initial": {"schema_version":"1.0","session_id":"replaced","sequence":0,"captured_at":"2026-01-01T00:00:00Z","game":{"running":true,"loaded":true,"paused":false},"player":{"health":80,"max_health":100,"in_combat":true,"in_vehicle":false,"position":{"x":3,"y":4,"z":0}},"companion":{"present":true,"health":100,"max_health":100,"distance_to_player":5,"current_intent":"protect","moving":true},"environment":{"district":"Pacifica","visible_hostiles":2,"highest_threat_id":"animal-1"}},
+  "steps": [
+    {"duration":1,"patch":{}}, {"duration":0.75,"patch":{"player":{"health":49}}}, {"duration":0.75,"patch":{"player":{"health":24}}},
+    {"duration":2,"patch":{"companion":{"current_intent":"retreat"}}}, {"duration":1,"patch":{"player":{"health":40,"in_combat":false},"environment":{"visible_hostiles":0,"highest_threat_id":null}}}, {"duration":1,"patch":{"player":{"health":75}}}
+  ]
+}

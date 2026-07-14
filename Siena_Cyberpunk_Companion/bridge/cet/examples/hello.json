@@ -1,0 +1,16 @@
+{
+  "bridge_id": "siena-cyberpunk-cet",
+  "bridge_version": "0.2.0",
+  "protocol_version": "1.0",
+  "transport": "red_http_client",
+  "game_version": "unknown-live-check",
+  "cet_version": "unknown-live-check",
+  "capabilities": {
+    "player_health": true,
+    "player_position": true,
+    "combat_state": true,
+    "vehicle_state": true,
+    "pause_state": false,
+    "district": false
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Siena Cyberpunk Observer",
+  "version": "0.2.0",
+  "description": "Read-only localhost telemetry bridge for Siena Cyberpunk Observer",
+  "author": "Siena",
+  "read_only": true,
+  "protocol_version": "1.0",
+  "dependencies": ["Cyber Engine Tweaks", "RED4ext", "redscript", "RedHttpClient"]
+}
