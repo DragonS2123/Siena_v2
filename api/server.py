@@ -21,7 +21,7 @@ import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 import config
 from core import model_router
@@ -119,6 +119,42 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
     attachments: list[ChatAttachment] = []
+
+
+class ExternalGameReactionMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(pattern="^cyberpunk_companion$")
+    channel: str = Field(pattern="^game_observer$")
+    mode: str = Field(pattern="^read_only_reaction$")
+    game: str = Field(pattern="^cyberpunk_2077$")
+    game_session_id: str = Field(min_length=1, max_length=128)
+    event_id: str = Field(min_length=1, max_length=128)
+    request_id: str = Field(min_length=1, max_length=128)
+
+
+class ExternalGameReactionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=config.EXTERNAL_GAME_REACTION_MAX_PROMPT_CHARS)
+    request_id: str = Field(min_length=1, max_length=128)
+    language: str = Field(default="ru", pattern="^(ru|en)$")
+    metadata: ExternalGameReactionMetadata
+    stateless: bool = Field(default=True, frozen=True)
+    tools_enabled: bool = Field(default=False, frozen=True)
+    memory_write_enabled: bool = Field(default=False, frozen=True)
+    tts_enabled: bool = Field(default=False, frozen=True)
+    attachments_enabled: bool = Field(default=False, frozen=True)
+
+
+class ExternalGameReactionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    reasoning: str | None = None
+    model: str
+    request_id: str
+    metadata: ExternalGameReactionMetadata
 
 
 class ClientTraceEventRequest(BaseModel):
@@ -2260,6 +2296,53 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
             **turn_result,
             "attachments": [_public_attachment(a) for a in persisted_attachments],
         }
+
+
+_GAME_REACTION_BOUNDARY = """This is a stateless read-only game-observer request.
+Generate only a short natural companion reaction. Do not call tools, browse,
+write memory, create or modify conversations, synthesize speech, inspect
+attachments, delegate to specialist models, or change the active model.
+Return plain user-facing text only."""
+
+
+@app.post("/api/external/game-reaction", response_model=ExternalGameReactionResponse)
+async def external_game_reaction(request: ExternalGameReactionRequest) -> ExternalGameReactionResponse:
+    """Stateless external text generation for the Cyberpunk companion.
+
+    This deliberately bypasses run_chat_turn and therefore never touches
+    ConversationStore, memory context, model routing, tools, attachments,
+    presence or voice/TTS services. The current human-selected normal chat
+    model is used without accepting a client-side model override.
+    """
+    if not config.EXTERNAL_GAME_REACTIONS_ENABLED:
+        raise HTTPException(status_code=404, detail="external game reactions are disabled")
+    if not request.stateless or request.tools_enabled or request.memory_write_enabled or request.tts_enabled or request.attachments_enabled:
+        raise HTTPException(status_code=400, detail="game reactions must be stateless with tools, memory, TTS and attachments disabled")
+
+    target_model = _active_chat_model
+    turn_client = ollama_client if target_model == config.PRIMARY_MODEL else _build_routed_client(target_model)
+    messages = [
+        {"role": "system", "content": f"{config.SYSTEM_PROMPT}\n\n{_GAME_REACTION_BOUNDARY}"},
+        {"role": "user", "content": request.prompt},
+    ]
+    try:
+        raw = await asyncio.to_thread(turn_client.chat, messages, None)
+    except SienaInfraError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    message = raw.get("message") if isinstance(raw, dict) else None
+    if not isinstance(message, dict):
+        raise HTTPException(status_code=502, detail="model returned malformed response")
+    text = message.get("content")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=502, detail="model response has no text content")
+    reasoning = message.get("thinking") or raw.get("thinking")
+    return ExternalGameReactionResponse(
+        text=text,
+        reasoning=reasoning if isinstance(reasoning, str) else None,
+        model=str(raw.get("model") or target_model),
+        request_id=request.request_id,
+        metadata=request.metadata,
+    )
 
 
 @app.post("/api/translate")

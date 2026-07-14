@@ -5,6 +5,7 @@ POST /api/settings (api/server.py) — по явному действию чел
 а не решению Runtime. Модуль остаётся источником истины: и старт процесса,
 и live-обновление читают/пишут именно эти атрибуты."""
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,6 +24,12 @@ PRIMARY_MODEL = "qwen3.5:9b"  # главный интеллект Siena — ве
 REQUEST_TIMEOUT_SECONDS = 120
 OLLAMA_THINK = False  # выключено для скорости agent loop; чисто техническая настройка вызова,
                       # не влияет на автономность модели в выборе tools/памяти/отказе отвечать
+
+# Additive localhost-only API for stateless read-only game reactions. Off by
+# default so ordinary desktop/Remote Gateway behavior is unchanged unless the
+# operator explicitly enables the integration before backend startup.
+EXTERNAL_GAME_REACTIONS_ENABLED = os.getenv("SIENA_EXTERNAL_GAME_REACTIONS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+EXTERNAL_GAME_REACTION_MAX_PROMPT_CHARS = 8000
 
 # --- Управление контекстом (см. DIAGNOSIS_CONTEXT_OVERFLOW.md) ---
 # Технические параметры транспорта — Runtime не решает, что "важно" сохранить

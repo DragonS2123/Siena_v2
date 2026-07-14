@@ -50,6 +50,13 @@ class TemplateReactionProvider:
         return TEMPLATES.get(event.event_type)
 
 
+class DeferredSienaCoreProvider:
+    name = "siena_core"
+
+    def text_for(self, event: GameEvent) -> None:
+        return None
+
+
 class ReactionPlanner:
     def __init__(
         self,
@@ -72,33 +79,56 @@ class ReactionPlanner:
     async def consider(self, event: GameEvent, now: datetime | None = None) -> SienaReaction | None:
         clock = now or datetime.now(timezone.utc)
         async with self._lock:
-            self._event_count += 1
-            self._last_event_at = clock
             text = self.provider.text_for(event) if self.enabled else None
             if not text:
+                self._event_count += 1
+                self._last_event_at = clock
                 logger.info("reaction_suppressed event_type=%s reason=no_provider_template", event.event_type)
                 return None
-            same_type = self._last_by_type.get(event.event_type)
-            if same_type and clock - same_type < self.same_event_cooldown:
-                logger.info("reaction_suppressed event_type=%s reason=same_event_cooldown", event.event_type)
-                return None
-            critical = event.priority == EventPriority.P0_CRITICAL
-            if not critical and self._last_reaction_at and clock - self._last_reaction_at < self.general_cooldown:
-                logger.info("reaction_suppressed event_type=%s reason=general_cooldown", event.event_type)
+            if not self._reserve_locked(event, clock):
                 return None
             reaction = SienaReaction(
                 event_id=event.event_id,
+                session_id=event.session_id,
                 event_type=event.event_type,
                 text=text,
                 created_at=clock,
                 priority=REACTION_PRIORITY[event.severity or EventSeverity.MEDIUM],
                 provider=self.provider.name,
+                requested_provider=self.provider.name,
             )
-            self._last_reaction_at = clock
-            self._last_by_type[event.event_type] = clock
             self._reaction_count += 1
             logger.info("reaction_created reaction_id=%s event_type=%s provider=%s", reaction.reaction_id, event.event_type, self.provider.name)
             return reaction
+
+    async def reserve(self, event: GameEvent, now: datetime | None = None) -> bool:
+        clock = now or datetime.now(timezone.utc)
+        async with self._lock:
+            if not self.enabled or event.event_type not in TEMPLATES:
+                self._event_count += 1
+                self._last_event_at = clock
+                logger.info("reaction_suppressed event_type=%s reason=not_reaction_eligible", event.event_type)
+                return False
+            return self._reserve_locked(event, clock)
+
+    def _reserve_locked(self, event: GameEvent, clock: datetime) -> bool:
+        self._event_count += 1
+        self._last_event_at = clock
+        same_type = self._last_by_type.get(event.event_type)
+        if same_type and clock - same_type < self.same_event_cooldown:
+            logger.info("reaction_suppressed event_type=%s reason=same_event_cooldown", event.event_type)
+            return False
+        critical = event.priority == EventPriority.P0_CRITICAL
+        if not critical and self._last_reaction_at and clock - self._last_reaction_at < self.general_cooldown:
+            logger.info("reaction_suppressed event_type=%s reason=general_cooldown", event.event_type)
+            return False
+        self._last_reaction_at = clock
+        self._last_by_type[event.event_type] = clock
+        return True
+
+    async def record_reaction(self) -> None:
+        async with self._lock:
+            self._reaction_count += 1
 
     async def consider_many(self, events: list[GameEvent], now: datetime | None = None) -> list[SienaReaction]:
         reactions: list[SienaReaction] = []
@@ -127,4 +157,8 @@ class ReactionPlanner:
 
 
 def create_reaction_provider(name: str) -> ReactionProvider:
-    return TemplateReactionProvider() if name == "template" else DisabledReactionProvider()
+    if name == "template":
+        return TemplateReactionProvider()
+    if name == "siena_core":
+        return DeferredSienaCoreProvider()
+    return DisabledReactionProvider()

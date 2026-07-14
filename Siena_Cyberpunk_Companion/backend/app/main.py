@@ -15,6 +15,8 @@ from app.services.event_bus import EventBus
 from app.services.event_filter import EventFilter
 from app.services.event_synthesizer import EventSynthesizer
 from app.services.reaction_planner import ReactionPlanner, create_reaction_provider
+from app.services.reaction_dispatch import ReactionDispatchService
+from app.services.siena_core_reaction_provider import SienaCoreReactionProvider
 from app.services.siena_core_client import DisabledSienaCoreClient
 from app.services.state_diff import diff_states
 from app.services.state_store import StateStore
@@ -31,6 +33,7 @@ class Services:
     filter: EventFilter
     scheduler: DecisionScheduler
     reaction_planner: ReactionPlanner
+    reaction_dispatch: ReactionDispatchService
     core_client: DisabledSienaCoreClient
     bridge_registry: BridgeRegistry
     diff: Callable = diff_states
@@ -38,7 +41,7 @@ class Services:
     async def publish_event(self, event):
         await self.bus.publish("event", event)
         await self.bus.publish("game_event", event)
-        reaction = await self.reaction_planner.consider(event)
+        reaction = await self.reaction_dispatch.handle_event(event)
         if reaction:
             await self.bus.publish("siena_reaction", reaction)
         command = await self.scheduler.consider(event)
@@ -61,6 +64,7 @@ class Services:
             "last_packet_at": latest.captured_at.isoformat() if latest else None,
             "scheduler": await self.scheduler.status(),
             "planner": (await self.reaction_planner.status()).model_dump(mode="json"),
+            "reaction_provider": (await self.reaction_dispatch.status()).model_dump(mode="json"),
             "active_source": bridge_status.active_source,
             "bridge": bridge_status.model_dump(mode="json"),
         }
@@ -68,10 +72,39 @@ class Services:
 
 def create_services(settings: Settings | None = None) -> Services:
     config = settings or get_settings()
+    bus = EventBus(config.event_buffer_size, config.websocket_queue_size, config.reaction_buffer_size)
+    planner = ReactionPlanner(
+        create_reaction_provider(config.reaction_provider),
+        config.reactions_enabled,
+        config.general_reaction_cooldown_seconds,
+        config.same_event_cooldown_seconds,
+    )
+    core_provider = SienaCoreReactionProvider(
+        enabled=config.siena_core_enabled,
+        base_url=config.siena_core_base_url,
+        api_token=config.siena_core_api_token,
+        connect_timeout_seconds=config.siena_core_connect_timeout_seconds,
+        request_timeout_seconds=config.siena_core_request_timeout_seconds,
+        max_retries=config.siena_core_max_retries,
+        max_response_chars=config.siena_core_max_response_chars,
+        failure_threshold=config.siena_core_circuit_failure_threshold,
+        circuit_reset_seconds=config.siena_core_circuit_reset_seconds,
+    )
+    dispatch = ReactionDispatchService(
+        configured_provider=config.reaction_provider,
+        planner=planner,
+        bus=bus,
+        core_provider=core_provider,
+        fallback_provider=config.siena_core_fallback_provider,
+        queue_capacity=config.siena_core_queue_size,
+        recent_events_limit=config.siena_core_recent_events_limit,
+        max_event_age_seconds=config.siena_core_max_event_age_seconds,
+        language=config.siena_core_language,
+    )
     return Services(
         settings=config,
         store=StateStore(),
-        bus=EventBus(config.event_buffer_size, config.websocket_queue_size, config.reaction_buffer_size),
+        bus=bus,
         synthesizer=EventSynthesizer(
             config.companion_too_far_meters,
             config.companion_stuck_seconds,
@@ -86,12 +119,8 @@ def create_services(settings: Settings | None = None) -> Services:
         ),
         filter=EventFilter(config.damage_window_seconds, config.enemy_debounce_seconds, config.same_event_cooldown_seconds),
         scheduler=DecisionScheduler(),
-        reaction_planner=ReactionPlanner(
-            create_reaction_provider(config.reaction_provider),
-            config.reactions_enabled,
-            config.general_reaction_cooldown_seconds,
-            config.same_event_cooldown_seconds,
-        ),
+        reaction_planner=planner,
+        reaction_dispatch=dispatch,
         core_client=DisabledSienaCoreClient(),
         bridge_registry=BridgeRegistry(config.protocol_version, config.bridge_timeout_seconds, config.bridge_registry_size, config.telemetry_source),
     )
@@ -109,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await services.reaction_dispatch.start()
         task = asyncio.create_task(maintain_pipeline(services), name="event-pipeline-maintenance")
         logger.info("observer backend started on %s:%s", services.settings.host, services.settings.port)
         try:
@@ -117,8 +147,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            await services.reaction_dispatch.stop()
 
-    app = FastAPI(title="Siena Cyberpunk Companion", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Siena Cyberpunk Companion", version="0.4.0", lifespan=lifespan)
     app.state.services = services
     app.add_middleware(
         CORSMiddleware,

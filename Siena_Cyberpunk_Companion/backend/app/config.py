@@ -26,7 +26,21 @@ class Settings(BaseSettings):
     player_position_epsilon: float = Field(default=0.5, gt=0)
     session_disconnect_timeout_seconds: float = Field(default=10.0, gt=0)
     reactions_enabled: bool = True
-    reaction_provider: Literal["template", "disabled"] = "template"
+    reaction_provider: Literal["template", "disabled", "siena_core"] = "template"
+    siena_core_enabled: bool = False
+    siena_core_base_url: str = ""
+    siena_core_api_token: str = ""
+    siena_core_connect_timeout_seconds: float = Field(default=2.0, gt=0)
+    siena_core_request_timeout_seconds: float = Field(default=45.0, gt=0)
+    siena_core_max_retries: int = Field(default=1, ge=0, le=3)
+    siena_core_fallback_provider: Literal["template", "disabled"] = "template"
+    siena_core_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    siena_core_circuit_reset_seconds: float = Field(default=30.0, gt=0)
+    siena_core_max_response_chars: int = Field(default=320, ge=32, le=2000)
+    siena_core_max_event_age_seconds: float = Field(default=45.0, gt=0)
+    siena_core_recent_events_limit: int = Field(default=6, ge=1, le=20)
+    siena_core_queue_size: int = Field(default=50, ge=2, le=1000)
+    siena_core_language: Literal["ru", "en"] = "ru"
     companion_too_far_meters: float = Field(default=20.0, gt=0)
     companion_stuck_seconds: float = Field(default=5.0, gt=0)
     companion_movement_epsilon: float = Field(default=0.25, gt=0)

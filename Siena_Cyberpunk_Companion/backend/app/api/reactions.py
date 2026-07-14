@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Request
 
 from app.models.game_event import EventType
-from app.models.reaction import PlannerStatus, SienaReaction
+from app.models.reaction import PlannerStatus, ReactionProviderStatus, SienaReaction
 
 router = APIRouter(prefix="/api/v1")
 
@@ -24,3 +24,8 @@ async def latest_reaction(request: Request, event_type: EventType | None = None)
 @router.get("/planner/status", response_model=PlannerStatus)
 async def planner_status(request: Request) -> PlannerStatus:
     return await request.app.state.services.reaction_planner.status()
+
+
+@router.get("/reaction-provider/status", response_model=ReactionProviderStatus)
+async def reaction_provider_status(request: Request) -> ReactionProviderStatus:
+    return await request.app.state.services.reaction_dispatch.status()

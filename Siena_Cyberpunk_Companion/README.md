@@ -1,8 +1,8 @@
-# Siena Cyberpunk Companion v0.3
+# Siena Cyberpunk Companion v0.4
 
-Read-only companion pipeline for Cyberpunk 2077. It accepts the existing v0.2 CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, applies aggregation and cooldowns, creates optional template text reactions, and publishes bounded history through REST and the existing WebSocket.
+Read-only companion pipeline for Cyberpunk 2077. It accepts the existing v0.2 CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, applies aggregation and cooldowns, and publishes bounded event/reaction history through REST and the existing WebSocket. v0.4 can optionally ask the separately running Siena v2 backend for short text reactions over local HTTP.
 
-It does **not** send commands to Cyberpunk, control the player/NPCs, call Siena Core/Ollama, or use TTS. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod.
+It does **not** send commands to Cyberpunk, control the player/NPCs, start Siena/Ollama, or use TTS. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod. Siena Core integration is opt-in and fails back to local templates without interrupting telemetry.
 
 ## Pipeline
 
@@ -13,13 +13,15 @@ CET bridge or simulator
   -> StateDiff
   -> EventSynthesizer (capability-aware detectors + session/idle latches)
   -> EventFilter (damage aggregation + per-event cooldown)
-  -> ReactionPlanner (template or disabled, priority + cooldown)
+  -> ReactionPlanner (priority + cooldown reservation)
+  -> bounded priority queue (one asynchronous worker)
+  -> Siena Core local HTTP or explicit template fallback
   -> bounded EventBus
   -> REST + existing /ws
   -> React Game Events / Siena Reactions
 ```
 
-The existing v0.2 bridge remains unchanged. `BridgeRegistry` still negotiates protocol `1.0`, gives live CET priority in `auto`, reports `source_conflict`, and exposes capabilities. A CET capability reported as unavailable is never interpreted as a false game state. Health and position alone are sufficient for the v0.3 detectors.
+The existing v0.2 bridge remains unchanged. `BridgeRegistry` still negotiates protocol `1.0`, gives live CET priority in `auto`, reports `source_conflict`, and exposes capabilities. A CET capability reported as unavailable is never interpreted as a false game state. Health and position alone are sufficient for the detectors.
 
 ## Install and run
 
@@ -38,13 +40,13 @@ Run processes in separate terminals:
 ```powershell
 .\scripts\start_backend.ps1
 .\scripts\start_frontend.ps1
-.\scripts\start_simulator.ps1 -Scenario v03_readonly -Speed 20
+.\scripts\start_simulator.ps1 -Scenario v04_siena_core -Speed 20
 ```
 
 Or launch all three:
 
 ```powershell
-.\scripts\start_all.ps1 -Scenario v03_readonly -Speed 20
+.\scripts\start_all.ps1 -Scenario v04_siena_core -Speed 20
 ```
 
 Backend: `http://127.0.0.1:8765`; UI: `http://127.0.0.1:5173`; WebSocket: `ws://127.0.0.1:8765/ws`.
@@ -62,16 +64,24 @@ Existing v0.1/v0.2 events remain available for compatibility. Each event has a u
 
 Defaults: damage is aggregated for 1.5 seconds; low health is latched at 25% until recovery above 35%; critical health is latched at 10%; healing requires a 5% single-state gain; idle starts after 60 seconds under a 0.5-unit movement epsilon; session end occurs after 10 seconds without accepted active telemetry. History is capped at 500 events and 200 reactions.
 
-## Reactions
+## Reaction providers
 
-`TemplateReactionProvider` is the default. It reacts only to mapped meaningful events, not every event. `ReactionPlanner` considers priority, a 20-second general cooldown and 60-second same-event cooldown; critical events bypass the general cooldown. `DisabledReactionProvider` creates no reactions. Reactions are text-only and use [protocol/siena_reaction.schema.json](protocol/siena_reaction.schema.json).
+`TemplateReactionProvider` remains the safe default. `SienaCoreReactionProvider` is opt-in. `ReactionPlanner` reserves only mapped meaningful events, applies a 20-second general cooldown and a 60-second same-event cooldown, and lets critical events bypass the general cooldown. The selected event is put into a bounded priority queue; telemetry returns immediately and a single worker performs HTTP calls in order. Critical work can evict lower-priority queued work, while rejected or evicted work is logged explicitly.
+
+The Core request contains a compact event allowlist and a small recent-event window. It omits coordinates and raw telemetry and asks for text only. It cannot choose a model, enable tools/web/TTS, write memory, create a conversation, or invoke specialist routing. Responses are schema-validated, stripped of reasoning/Markdown wrappers, and length-bounded. Reactions record the requested provider, actual provider, model, latency, request id, and any explicit fallback reason.
+
+Transient network/5xx errors get bounded retries. 4xx responses do not. Repeated failures open a circuit breaker; open state refuses network work until the reset interval, then admits one half-open probe. Timeout, malformed/empty output, open circuit, and configuration errors use `template_fallback` when enabled or produce no reaction when disabled. Old-session, ended-session, TTL-expired, and superseded critical responses are suppressed after the call, so a late model response never leaks into the current session.
 
 ```powershell
 $env:SIENA_CP_REACTIONS_ENABLED='true'
-$env:SIENA_CP_REACTION_PROVIDER='template' # template | disabled
+$env:SIENA_CP_REACTION_PROVIDER='siena_core' # siena_core | template | disabled
+$env:SIENA_CP_SIENA_CORE_ENABLED='true'
+$env:SIENA_CP_SIENA_CORE_BASE_URL='http://127.0.0.1:8000'
+..\scripts\start_backend.ps1 -EnableExternalGameReactions # run in Siena_v2 root
+.\scripts\start_backend.ps1 -ReactionProvider siena_core -SienaCoreUrl 'http://127.0.0.1:8000'
 ```
 
-No provider imports Siena_v2 or starts an external model.
+The two projects remain independent processes. The companion never imports Siena_v2 and never starts it automatically. If Siena is unavailable, the status card and `/api/v1/reaction-provider/status` report that fact while telemetry keeps flowing.
 
 ## REST API
 
@@ -84,6 +94,7 @@ Existing endpoints remain intact. v0.3 adds:
 | GET | `/api/v1/reactions` | `limit`, optional `event_type` |
 | GET | `/api/v1/reactions/latest` | latest matching reaction or `null` |
 | GET | `/api/v1/planner/status` | enabled/provider/counts/timestamps/cooldown |
+| GET | `/api/v1/reaction-provider/status` | cached reachability, circuit, queue, failures/fallbacks |
 
 All responses use Pydantic response models; no internal deque is exposed.
 
@@ -100,9 +111,9 @@ For compatibility the new envelopes also contain the same object in `data`. Each
 
 ## Simulator scenarios
 
-Existing scenarios: `exploration`, `combat`, `critical_health`, `vehicle`, `companion_stuck`.
+Existing scenarios: `exploration`, `combat`, `critical_health`, `vehicle`, `companion_stuck`, `v03_readonly`, and `v04_siena_core`.
 
-`v03_readonly` covers a new session, movement, multiple small hits, strong damage, low/critical thresholds, healing, combat/vehicle transitions, 60 seconds idle, movement after idle, and then exits. Backend timeout subsequently creates `session_ended`. At `-Speed 20`, the complete scenario plus disconnect timeout is convenient for manual verification.
+`v04_siena_core` supplies meaningful events for Core success/failure checks. `simulator/fake_siena.py` is a deterministic local stand-in with success, delay, 500, 401, 403, malformed, empty, reasoning, long, and recovery modes; tests and smoke checks never need a real external network.
 
 ## Configuration
 
@@ -125,6 +136,16 @@ All backend variables use prefix `SIENA_CP_`:
 | `REACTION_BUFFER_SIZE` | 200 |
 | `REACTIONS_ENABLED` | true |
 | `REACTION_PROVIDER` | template |
+| `SIENA_CORE_ENABLED` | false |
+| `SIENA_CORE_BASE_URL` | http://127.0.0.1:8000 |
+| `SIENA_CORE_CONNECT_TIMEOUT_SECONDS` | 0.5 |
+| `SIENA_CORE_REQUEST_TIMEOUT_SECONDS` | 5 |
+| `SIENA_CORE_MAX_RETRIES` | 1 |
+| `SIENA_CORE_FALLBACK_ENABLED` | true |
+| `SIENA_CORE_CIRCUIT_FAILURE_THRESHOLD` | 3 |
+| `SIENA_CORE_CIRCUIT_RESET_SECONDS` | 30 |
+| `SIENA_CORE_QUEUE_SIZE` | 32 |
+| `SIENA_CORE_MAX_EVENT_AGE_SECONDS` | 20 |
 
 The v0.2 bridge/source/CORS/companion settings remain supported.
 
@@ -138,21 +159,29 @@ npm.cmd run check:lua
 npm.cmd run build
 ```
 
-## Manual v0.3 check
+## Manual v0.4 check
 
-1. Start backend and frontend.
-2. Start `v03_readonly -Speed 20`, or start Cyberpunk with the CET bridge.
-3. In the UI verify bridge/live telemetry remains visible.
-4. Take damage (or let the scenario run) and verify one aggregated `player_damaged` event.
-5. Verify `health_low` and `health_critical` appear only on threshold entry.
-6. Verify a mapped Siena text reaction appears without audio/model startup.
-7. Keep health below the threshold and confirm events do not repeat each telemetry frame.
-8. Stop telemetry and wait 10 seconds; verify `session_ended` through REST/UI.
+1. In the Siena_v2 root start `scripts/start_backend.ps1 -EnableExternalGameReactions`.
+2. Confirm `GET http://127.0.0.1:8000/api/health` succeeds.
+3. Start companion with `scripts/start_backend.ps1 -ReactionProvider siena_core -SienaCoreUrl 'http://127.0.0.1:8000'`.
+4. Start the frontend and `scripts/start_simulator.ps1 -Scenario v04_siena_core -Speed 20`.
+5. Verify bridge/live telemetry continues updating while a reaction request is pending.
+6. Verify the Siena Core Status card says reachable and circuit `closed`.
+7. Verify a mapped event produces a short `siena_core` reaction.
+8. Verify the reaction diagnostics show model and latency, with no fallback badge.
+9. Verify Siena's normal conversation list/history did not gain a game-reaction turn.
+10. Stop Siena Core; run the scenario again and verify telemetry still arrives.
+11. Verify reactions are marked `template_fallback` with an explicit reason.
+12. After the configured failure threshold, verify the circuit reports `open` and no request storm occurs.
+13. Restart Siena, wait for the reset interval, then trigger one event and verify half-open recovery closes the circuit.
+14. Run the fake provider in `delay` mode and end/change session; verify its late response is not published.
+15. Set `SIENA_CP_REACTION_PROVIDER=disabled`; verify events remain visible and no reaction is emitted.
 
 ## Known limitations
 
 - History and latches are process-local and reset when the backend restarts.
 - Real CET currently proves health and position; other capabilities remain unavailable unless the bridge explicitly reports them.
-- Template reactions are deterministic and intentionally small; there is no Siena Core adapter in v0.3.
+- Siena Core must be started separately and its external-game endpoint must be explicitly enabled.
+- Provider status is cached; routine status/UI polling never performs a network health probe.
 - Legacy display-only commands remain for v0.2 API/UI compatibility but never reach the game.
 - The simulator is a protocol harness, not game physics, and will not run alongside an active CET source in automatic mode.

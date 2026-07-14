@@ -53,6 +53,18 @@ bridge unless a concrete native-only capability (file dialogs, system tray)
 actually requires it. Ollama runs every local model; SQLite backs
 conversations/memory; JSONL backs logs/trace.
 
+## Optional external game reactions
+
+Siena exposes an additive, stateless `POST /api/external/game-reaction` endpoint for local read-only game companions. It is disabled by default and accepts only a bounded event summary plus recent normalized events. This path makes one direct call to the currently active chat model; it does not create conversations, persist messages, read/write memory, run tools or web research, invoke routing/specialists, process attachments, or use voice/TTS. Clients cannot override the model or enable side effects.
+
+Enable it only when the companion needs it:
+
+```powershell
+.\scripts\start_backend.ps1 -EnableExternalGameReactions
+```
+
+The equivalent environment variable is `SIENA_EXTERNAL_GAME_REACTIONS_ENABLED=true`. Do not enable it automatically from another project; Siena and each client retain independent lifecycle and configuration.
+
 ## Testing / building
 
 ```powershell

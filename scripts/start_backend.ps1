@@ -20,7 +20,8 @@
 # ASCII rather than relying on encoding/BOM handling.
 
 param(
-    [switch]$Reload
+    [switch]$Reload,
+    [switch]$EnableExternalGameReactions
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +39,11 @@ if (Test-Path $venvPython) {
 
 Write-Host "Siena v2 backend - using interpreter: $python"
 Write-Host "Repo root: $repoRoot"
+
+if ($EnableExternalGameReactions) {
+    $env:SIENA_EXTERNAL_GAME_REACTIONS_ENABLED = "true"
+    Write-Host "External stateless game reactions: ENABLED"
+}
 
 $uvicornArgs = @("-m", "uvicorn", "api.server:app", "--host", "127.0.0.1", "--port", "8000")
 if ($Reload) {
