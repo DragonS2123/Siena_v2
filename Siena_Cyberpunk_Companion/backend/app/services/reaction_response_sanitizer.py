@@ -8,7 +8,10 @@ class InvalidReactionResponse(ValueError):
 
 class ReactionResponseSanitizer:
     _THINK = re.compile(r"<think>.*?</think>|<reasoning>.*?</reasoning>", re.IGNORECASE | re.DOTALL)
-    _PREFIX = re.compile(r"^(?:final answer|answer|ответ|assistant|siena)\s*:\s*", re.IGNORECASE)
+    _PREFIX = re.compile(
+        r"^(?:(?:final answer|answer|ответ|assistant|reaction|siena|сиена)\s*:\s*)+",
+        re.IGNORECASE,
+    )
 
     def __init__(self, max_chars: int = 320) -> None:
         self.max_chars = max_chars
@@ -21,6 +24,8 @@ class ReactionResponseSanitizer:
         value = re.sub(r"\s+", " ", value).strip()
         if not value:
             raise InvalidReactionResponse("Siena Core returned empty reaction text")
+        if (value.startswith("{") and value.endswith("}")) or (value.startswith("[") and value.endswith("]")):
+            raise InvalidReactionResponse("Siena Core returned technical JSON instead of reaction text")
         try:
             parsed = json.loads(value)
         except (json.JSONDecodeError, TypeError):

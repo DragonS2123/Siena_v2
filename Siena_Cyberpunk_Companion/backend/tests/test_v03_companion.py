@@ -157,7 +157,7 @@ async def test_disabled_provider_never_creates_reactions():
 @pytest.mark.asyncio
 async def test_template_provider_returns_expected_text():
     reaction = await ReactionPlanner(TemplateReactionProvider()).consider(normalized_event(), NOW)
-    assert reaction and reaction.text == "Здоровье уже низкое. Лучше найти укрытие."
+    assert reaction and reaction.text == "Здоровья осталось мало. Будь осторожнее."
     assert reaction.provider == "template"
 
 

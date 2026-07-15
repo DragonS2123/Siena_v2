@@ -7,7 +7,7 @@ from typing import Callable
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import bridge, commands, events, health, reactions, telemetry, websocket
+from app.api import bridge, commands, events, health, reactions, scenes, telemetry, websocket
 from app.config import Settings, get_settings
 from app.services.decision_scheduler import DecisionScheduler
 from app.services.bridge_registry import BridgeRegistry
@@ -16,6 +16,8 @@ from app.services.event_filter import EventFilter
 from app.services.event_synthesizer import EventSynthesizer
 from app.services.reaction_planner import ReactionPlanner, create_reaction_provider
 from app.services.reaction_dispatch import ReactionDispatchService
+from app.services.companion_behavior_policy import CompanionBehaviorPolicy
+from app.services.scene_context import SceneContextBuilder
 from app.services.siena_core_reaction_provider import SienaCoreReactionProvider
 from app.services.siena_core_client import DisabledSienaCoreClient
 from app.services.state_diff import diff_states
@@ -34,16 +36,31 @@ class Services:
     scheduler: DecisionScheduler
     reaction_planner: ReactionPlanner
     reaction_dispatch: ReactionDispatchService
+    scene_builder: SceneContextBuilder
+    behavior_policy: CompanionBehaviorPolicy
     core_client: DisabledSienaCoreClient
     bridge_registry: BridgeRegistry
     diff: Callable = diff_states
 
-    async def publish_event(self, event):
+    async def publish_event(self, event, capabilities=None):
         await self.bus.publish("event", event)
         await self.bus.publish("game_event", event)
-        reaction = await self.reaction_dispatch.handle_event(event)
+        if self.settings.scene_enabled:
+            scene_update = self.scene_builder.apply(event, capabilities)
+            opportunity = self.behavior_policy.evaluate(scene_update)
+            reaction = (
+                await self.reaction_dispatch.handle_opportunity(opportunity)
+                if opportunity
+                else None
+            )
+            if not opportunity:
+                await self.reaction_dispatch.observe_event(event)
+        else:
+            reaction = await self.reaction_dispatch.handle_event(event)
         if reaction:
             await self.bus.publish("siena_reaction", reaction)
+        if self.settings.scene_enabled and scene_update.significant and scene_update.scene:
+            await self.bus.publish("scene_context_updated", scene_update.scene)
         command = await self.scheduler.consider(event)
         if command:
             await self.bus.publish("command", command)
@@ -58,6 +75,7 @@ class Services:
         bridge_status = await self.bridge_registry.status()
         await self.store.activate(bridge_status.active_source)
         latest = await self.store.latest()
+        scene = self.scene_builder.current()
         return {
             "backend": "online",
             "active_session": latest.session_id if latest else None,
@@ -65,6 +83,7 @@ class Services:
             "scheduler": await self.scheduler.status(),
             "planner": (await self.reaction_planner.status()).model_dump(mode="json"),
             "reaction_provider": (await self.reaction_dispatch.status()).model_dump(mode="json"),
+            "scene": scene.model_dump(mode="json") if scene else None,
             "active_source": bridge_status.active_source,
             "bridge": bridge_status.model_dump(mode="json"),
         }
@@ -89,6 +108,22 @@ def create_services(settings: Settings | None = None) -> Services:
         max_response_chars=config.siena_core_max_response_chars,
         failure_threshold=config.siena_core_circuit_failure_threshold,
         circuit_reset_seconds=config.siena_core_circuit_reset_seconds,
+        player_name=config.siena_core_player_name,
+    )
+    scene_builder = SceneContextBuilder(
+        enabled=config.scene_enabled,
+        event_history_limit=config.scene_event_history_limit,
+        scene_history_limit=config.scene_history_limit,
+        idle_gap_seconds=config.scene_idle_gap_seconds,
+        max_duration_seconds=config.scene_max_duration_seconds,
+        recent_event_window_seconds=config.scene_recent_event_window_seconds,
+    )
+    behavior_policy = CompanionBehaviorPolicy(
+        max_reactions=config.scene_max_reactions,
+        min_reaction_interval_seconds=config.scene_min_reaction_interval_seconds,
+        critical_bypass=config.scene_critical_bypass,
+        resolution_enabled=config.scene_resolution_reaction_enabled,
+        opportunity_ttl_seconds=config.scene_recent_event_window_seconds,
     )
     dispatch = ReactionDispatchService(
         configured_provider=config.reaction_provider,
@@ -98,8 +133,11 @@ def create_services(settings: Settings | None = None) -> Services:
         fallback_provider=config.siena_core_fallback_provider,
         queue_capacity=config.siena_core_queue_size,
         recent_events_limit=config.siena_core_recent_events_limit,
+        recent_reactions_limit=config.scene_recent_reactions_limit,
         max_event_age_seconds=config.siena_core_max_event_age_seconds,
         language=config.siena_core_language,
+        scene_builder=scene_builder,
+        scene_stale_grace_seconds=config.scene_reaction_stale_grace_seconds,
     )
     return Services(
         settings=config,
@@ -121,6 +159,8 @@ def create_services(settings: Settings | None = None) -> Services:
         scheduler=DecisionScheduler(),
         reaction_planner=planner,
         reaction_dispatch=dispatch,
+        scene_builder=scene_builder,
+        behavior_policy=behavior_policy,
         core_client=DisabledSienaCoreClient(),
         bridge_registry=BridgeRegistry(config.protocol_version, config.bridge_timeout_seconds, config.bridge_registry_size, config.telemetry_source),
     )
@@ -149,7 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             await services.reaction_dispatch.stop()
 
-    app = FastAPI(title="Siena Cyberpunk Companion", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="Siena Cyberpunk Companion", version="0.5.0", lifespan=lifespan)
     app.state.services = services
     app.add_middleware(
         CORSMiddleware,
@@ -163,6 +203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(telemetry.router)
     app.include_router(events.router)
     app.include_router(reactions.router)
+    app.include_router(scenes.router)
     app.include_router(commands.router)
     app.include_router(websocket.router)
     return app

@@ -52,7 +52,7 @@ async def ingest_state(state: GameState, request: Request) -> dict:
     commands = []
     reactions = []
     for event in sorted(accepted, key=lambda item: PRIORITY_RANK[item.priority]):
-        reaction, command = await services.publish_event(event)
+        reaction, command = await services.publish_event(event, capabilities)
         if reaction:
             reactions.append(reaction)
         if command:

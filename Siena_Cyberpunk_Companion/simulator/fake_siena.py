@@ -4,7 +4,7 @@ import asyncio
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
-app = FastAPI(title="Fake Siena v0.4 test server")
+app = FastAPI(title="Fake Siena v0.4.1 test server")
 MODE = "success"
 DELAY = 0.0
 CALLS = 0
@@ -30,9 +30,9 @@ async def reaction(request: Request):
         return {"unexpected": True}
     text = {
         "empty": "",
-        "reasoning": "<think>internal</think> Держись, Ви.",
+        "reasoning": "<think>internal</think> Держись.",
         "long": "Это очень длинная естественная реакция " * 30,
-    }.get(MODE, "Осторожнее, Ви. Найди укрытие.")
+    }.get(MODE, "Здоровье критическое. Найди укрытие.")
     return {"text": text, "reasoning": "fake reasoning" if MODE == "reasoning" else None, "model": "fake-siena", "request_id": body["request_id"]}
 
 

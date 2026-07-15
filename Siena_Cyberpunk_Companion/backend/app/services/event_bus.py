@@ -31,7 +31,7 @@ class EventBus:
             self._reactions.append(data)
         serialized = data.model_dump(mode="json") if hasattr(data, "model_dump") else data
         payload = {"type": message_type, "data": serialized}
-        if message_type in {"game_event", "siena_reaction", "reaction_provider_status"}:
+        if message_type in {"game_event", "siena_reaction", "reaction_provider_status", "reaction_generation_status", "scene_context_updated"}:
             payload["payload"] = serialized
         async with self._lock:
             clients = tuple(self._clients)

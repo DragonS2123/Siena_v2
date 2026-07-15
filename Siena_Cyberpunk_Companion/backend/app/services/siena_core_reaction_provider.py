@@ -50,6 +50,7 @@ class SienaCoreReactionProvider:
         client: httpx.AsyncClient | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], datetime] | None = None,
+        player_name: str = "",
     ) -> None:
         self.enabled = enabled
         self.base_url = base_url.rstrip("/")
@@ -57,6 +58,7 @@ class SienaCoreReactionProvider:
         self.max_retries = max_retries
         self.sleep = sleep
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.player_name = player_name.strip()
         self.prompt_builder = GameReactionPromptBuilder()
         self.sanitizer = ReactionResponseSanitizer(max_response_chars)
         self.circuit = CircuitBreaker(failure_threshold, circuit_reset_seconds, self.clock)
@@ -80,7 +82,16 @@ class SienaCoreReactionProvider:
             raise SienaCoreProviderError(str(exc), category="circuit_open") from exc
 
         event = request.event
-        prompt = self.prompt_builder.build(event, request.recent_events, request.language, session_started_at)
+        prompt = self.prompt_builder.build(
+            event,
+            request.recent_events,
+            request.language,
+            session_started_at,
+            request.recent_reactions,
+            self.player_name,
+            request.scene_snapshot,
+            request.focus,
+        )
         metadata = SienaCoreMetadata(
             game_session_id=event.session_id,
             event_id=event.event_id,

@@ -9,7 +9,7 @@ from app.config import Settings
 from app.domain.priorities import EventPriority
 from app.main import create_app
 from app.models.game_event import EventSeverity, EventType, GameEvent
-from app.models.reaction import ReactionRequest
+from app.models.reaction import ReactionPriority, ReactionRequest, SienaReaction
 from app.services.circuit_breaker import CircuitBreaker, CircuitOpenError
 from app.services.event_bus import EventBus
 from app.services.game_reaction_prompt import GameReactionPromptBuilder
@@ -52,6 +52,35 @@ def test_prompt_builder_sends_only_meaningful_event_context():
     assert "Не вызывай инструменты" in prompt and "TTS" in prompt and "Не сохраняй событие в память" in prompt
 
 
+def test_prompt_defines_persona_player_identity_and_optional_name():
+    builder = GameReactionPromptBuilder()
+    unnamed = builder.build(event(), [], "ru", NOW)
+    assert "Ты — Сиена, игровой компаньон и наблюдатель" in unnamed
+    assert "Игрок не является Сиеной" in unnamed
+    assert "не начинай реплику со своего имени" in unnamed
+    assert '"player_name"' not in unnamed
+
+    named = builder.build(event(), [], "ru", NOW, player_name="Ви")
+    assert '"player_name":"Ви"' in named
+    assert "Имя игрока — Ви" in named
+
+
+def test_unprefixed_player_name_environment_setting(monkeypatch):
+    monkeypatch.setenv("SIENA_CORE_PLAYER_NAME", "Ви")
+    assert Settings().siena_core_player_name == "Ви"
+
+
+def test_prompt_recent_reactions_are_session_scoped():
+    current = SienaReaction(
+        event_id="one", session_id="game-1", event_type=EventType.HEALTH_LOW,
+        text="Будь осторожнее.", priority=ReactionPriority.HIGH, provider="siena_core",
+    )
+    other = current.model_copy(update={"reaction_id": "other", "session_id": "game-2", "text": "Чужая сессия."})
+    prompt = GameReactionPromptBuilder().build(event(), [], "ru", NOW, [other, current])
+    assert '"event_type":"health_low","text":"Будь осторожнее."' in prompt
+    assert "Чужая сессия" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_siena_provider_creates_strict_stateless_request():
     captured = {}
@@ -79,6 +108,9 @@ async def test_siena_provider_creates_strict_stateless_request():
 def test_sanitizer_removes_reasoning_markdown_and_prefix():
     sanitizer = ReactionResponseSanitizer(80)
     assert sanitizer.sanitize("<think>secret</think>```text\nОтвет: Держись, Ви.\n```") == "Держись, Ви."
+    assert sanitizer.sanitize("Сиена: Здоровье критическое.") == "Здоровье критическое."
+    assert sanitizer.sanitize("Reaction: Assistant: Спокойно.") == "Спокойно."
+    assert sanitizer.sanitize("Сиена думает, что бой закончился.") == "Сиена думает, что бой закончился."
 
 
 def test_sanitizer_rejects_empty_and_json_and_preserves_words():
@@ -219,6 +251,7 @@ def dispatch(core, *, fallback="template", clock=lambda: NOW):
     service = ReactionDispatchService(
         configured_provider="siena_core", planner=planner, bus=bus, core_provider=core,
         fallback_provider=fallback, queue_capacity=4, recent_events_limit=6,
+        recent_reactions_limit=5,
         max_event_age_seconds=45, language="ru", clock=clock,
     )
     return service, bus
@@ -263,13 +296,84 @@ async def test_worker_continues_after_unexpected_provider_exception():
     await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM))
     await service.handle_event(event(EventType.HEALTH_LOW, EventPriority.P1_HIGH, created_at=NOW + timedelta(seconds=1)))
     found = False
-    for _ in range(6):
+    for _ in range(10):
         message = await asyncio.wait_for(queue.get(), 1)
         if message["type"] == "siena_reaction":
             found = True
             break
     assert found and calls == 2 and service._worker and not service._worker.done()
     await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_generation_lifecycle_publishes_queued_generating_completed():
+    core = provider(lambda request: httpx.Response(200, json=response()))
+    service, bus = dispatch(core)
+    queue = await bus.connect()
+    await service.start()
+    await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM))
+    states = []
+    for _ in range(12):
+        message = await asyncio.wait_for(queue.get(), 1)
+        if message["type"] == "reaction_generation_status":
+            assert message["payload"] == message["data"]
+            states.append(message["data"]["state"])
+            assert "exception" not in message["data"] and "prompt" not in message["data"]
+            if message["data"]["state"] == "completed":
+                break
+    assert states == ["queued", "generating", "completed"]
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_recent_published_reactions_are_bounded_and_reset_by_session():
+    core = provider(lambda request: httpx.Response(200, json=response()))
+    service, _ = dispatch(core)
+    for index in range(7):
+        service._remember_reaction(SienaReaction(
+            event_id=f"event-{index}", session_id="old", event_type=EventType.HEALTH_LOW,
+            text=f"Реплика {index}", priority=ReactionPriority.HIGH, provider="siena_core",
+        ))
+    assert [item.text for item in service._recent_reactions["old"]] == [f"Реплика {index}" for index in range(2, 7)]
+    await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM, session="new"))
+    assert list(service._recent_reactions) == ["new"] and list(service._recent_reactions["new"]) == []
+    await core.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_and_event_bus_preserve_exact_russian_unicode():
+    exact = "Здоровье критическое. Найди укрытие."
+    core = provider(lambda request: httpx.Response(200, json=response(exact)))
+    result = await core.generate_reaction(reaction_request(), NOW)
+    assert result.text == exact
+    reaction = SienaReaction(
+        event_id="utf8-event", session_id="game-1", event_type=EventType.HEALTH_CRITICAL,
+        text=result.text, priority=ReactionPriority.CRITICAL, provider="siena_core",
+    )
+    bus = EventBus()
+    queue = await bus.connect()
+    await bus.publish("siena_reaction", reaction)
+    assert bus.reactions(1)[0].text == exact
+    assert (await queue.get())["payload"]["text"] == exact
+    await core.close()
+
+
+def test_rest_and_websocket_preserve_exact_template_unicode(state_factory):
+    exact = "Здоровье критическое. Найди укрытие."
+    settings = Settings(general_reaction_cooldown_seconds=0, same_event_cooldown_seconds=0)
+    with TestClient(create_app(settings)) as client:
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["type"] == "status"
+            client.post("/api/v1/telemetry/state", json=state_factory(1, player__health=9).model_dump(mode="json"))
+            websocket_text = None
+            for _ in range(20):
+                message = socket.receive_json()
+                if message["type"] == "siena_reaction" and message["payload"]["event_type"] == "health_critical":
+                    websocket_text = message["payload"]["text"]
+                    break
+            assert websocket_text == exact
+        rest = client.get("/api/v1/reactions", params={"limit": 20}).json()
+        assert next(item["text"] for item in rest if item["event_type"] == "health_critical") == exact
 
 
 @pytest.mark.asyncio
@@ -298,13 +402,18 @@ async def test_template_fallback_is_explicitly_marked():
     await service.start()
     await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM))
     reaction = None
-    for _ in range(5):
+    states = []
+    for _ in range(10):
         message = await asyncio.wait_for(queue.get(), 1)
         if message["type"] == "siena_reaction":
             reaction = message["data"]
-            break
+        if message["type"] == "reaction_generation_status":
+            states.append(message["data"]["state"])
+            if message["data"]["state"] == "fallback":
+                break
     assert reaction and reaction["provider"] == "template_fallback" and reaction["fallback_used"] is True
     assert reaction["metadata"]["actual_provider"] == "template"
+    assert states == ["queued", "generating", "fallback"]
     await service.stop()
 
 
@@ -315,9 +424,15 @@ async def test_disabled_fallback_creates_no_reaction():
     queue = await bus.connect()
     await service.start()
     await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM))
-    for _ in range(2):
-        await asyncio.wait_for(queue.get(), 1)
+    states = []
+    for _ in range(10):
+        message = await asyncio.wait_for(queue.get(), 1)
+        if message["type"] == "reaction_generation_status":
+            states.append(message["data"]["state"])
+            if message["data"]["state"] == "failed":
+                break
     assert bus.reactions() == []
+    assert states == ["queued", "generating", "failed"]
     await service.stop()
 
 
@@ -331,13 +446,21 @@ async def test_late_reaction_after_session_end_is_suppressed():
 
     core = provider(handler)
     service, bus = dispatch(core)
+    queue = await bus.connect()
     await service.start()
     await service.handle_event(event(EventType.SESSION_STARTED, EventPriority.P2_MEDIUM))
     await asyncio.wait_for(entered.wait(), 1)
     await service.handle_event(event(EventType.SESSION_ENDED, EventPriority.P2_MEDIUM, created_at=NOW + timedelta(seconds=1)))
     release.set()
-    await asyncio.sleep(0); await asyncio.sleep(0)
+    states = []
+    for _ in range(8):
+        message = await asyncio.wait_for(queue.get(), 1)
+        if message["type"] == "reaction_generation_status":
+            states.append(message["data"]["state"])
+            if message["data"]["state"] == "suppressed":
+                break
     assert bus.reactions() == [] and service.stale_suppressed_count == 1
+    assert states[-1] == "suppressed"
     await service.stop()
 
 

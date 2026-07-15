@@ -6,6 +6,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.game_event import EventType
+from app.models.scene import ReactionFocus, SceneContext, ScenePhase
 
 
 class ReactionPriority(StrEnum):
@@ -13,6 +14,20 @@ class ReactionPriority(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class ReactionGenerationStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    event_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    event_type: EventType
+    state: Literal["queued", "generating", "completed", "fallback", "suppressed", "failed"]
+    scene_id: str | None = None
+    scene_phase: ScenePhase | None = None
+    focus: ReactionFocus | None = None
+    reason: str | None = None
 
 
 class SienaReaction(BaseModel):
@@ -32,6 +47,10 @@ class SienaReaction(BaseModel):
     latency_ms: float | None = Field(default=None, ge=0)
     model: str | None = Field(default=None, max_length=128)
     request_id: str | None = Field(default=None, max_length=128)
+    scene_id: str | None = Field(default=None, max_length=128)
+    scene_revision: int | None = Field(default=None, ge=1)
+    scene_phase: ScenePhase | None = None
+    focus: ReactionFocus | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("created_at")
@@ -122,5 +141,12 @@ class ReactionRequest(BaseModel):
     request_id: str
     event: Any
     recent_events: list[Any] = Field(default_factory=list)
+    recent_reactions: list[Any] = Field(default_factory=list)
+    scene_id: str | None = None
+    scene_revision: int | None = Field(default=None, ge=1)
+    scene_phase: ScenePhase | None = None
+    focus: ReactionFocus | None = None
+    scene_snapshot: SceneContext | None = None
+    opportunity_expires_at: datetime | None = None
     language: Literal["ru", "en"] = "ru"
     queued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

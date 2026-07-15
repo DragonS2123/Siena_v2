@@ -1,12 +1,12 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SIENA_CP_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="SIENA_CP_", extra="ignore", populate_by_name=True)
 
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
@@ -39,8 +39,26 @@ class Settings(BaseSettings):
     siena_core_max_response_chars: int = Field(default=320, ge=32, le=2000)
     siena_core_max_event_age_seconds: float = Field(default=45.0, gt=0)
     siena_core_recent_events_limit: int = Field(default=6, ge=1, le=20)
+    siena_core_recent_reactions_limit: int = Field(default=5, ge=3, le=5)
+    siena_core_player_name: str = Field(
+        default="",
+        max_length=80,
+        validation_alias=AliasChoices("SIENA_CORE_PLAYER_NAME", "SIENA_CP_SIENA_CORE_PLAYER_NAME"),
+    )
     siena_core_queue_size: int = Field(default=50, ge=2, le=1000)
     siena_core_language: Literal["ru", "en"] = "ru"
+    scene_enabled: bool = True
+    scene_event_history_limit: int = Field(default=20, ge=5, le=200)
+    scene_history_limit: int = Field(default=50, ge=5, le=500)
+    scene_idle_gap_seconds: float = Field(default=30.0, gt=0)
+    scene_max_duration_seconds: float = Field(default=180.0, gt=0)
+    scene_recent_event_window_seconds: float = Field(default=45.0, gt=0)
+    scene_max_reactions: int = Field(default=3, ge=1, le=20)
+    scene_min_reaction_interval_seconds: float = Field(default=15.0, ge=0)
+    scene_critical_bypass: bool = True
+    scene_resolution_reaction_enabled: bool = True
+    scene_reaction_stale_grace_seconds: float = Field(default=3.0, ge=0)
+    scene_recent_reactions_limit: int = Field(default=5, ge=1, le=5)
     companion_too_far_meters: float = Field(default=20.0, gt=0)
     companion_stuck_seconds: float = Field(default=5.0, gt=0)
     companion_movement_epsilon: float = Field(default=0.25, gt=0)

@@ -6,19 +6,22 @@ from typing import Protocol
 from app.domain.priorities import PRIORITY_RANK, EventPriority
 from app.models.game_event import EventSeverity, EventType, GameEvent
 from app.models.reaction import PlannerStatus, ReactionPriority, SienaReaction
+from app.models.scene import ReactionFocus, ReactionOpportunity
 
 logger = logging.getLogger("siena_observer.reactions")
 
 TEMPLATES: dict[EventType, str] = {
-    EventType.SESSION_STARTED: "Я подключилась к игровой сессии и наблюдаю.",
-    EventType.PLAYER_DAMAGED: "Ты получил серьёзный урон.",
-    EventType.HEALTH_LOW: "Здоровье уже низкое. Лучше найти укрытие.",
-    EventType.HEALTH_CRITICAL: "Здоровье критическое.",
-    EventType.PLAYER_HEALED: "Здоровье восстановлено.",
+    EventType.SESSION_STARTED: "Я подключилась и наблюдаю за происходящим.",
+    EventType.PLAYER_DAMAGED: "Ты получил заметный урон.",
+    EventType.HEALTH_LOW: "Здоровья осталось мало. Будь осторожнее.",
+    EventType.HEALTH_CRITICAL: "Здоровье критическое. Найди укрытие.",
+    EventType.PLAYER_HEALED: "Стало лучше, здоровье восстановилось.",
     EventType.COMBAT_STARTED: "Начался бой.",
     EventType.COMBAT_ENDED: "Похоже, бой закончился.",
     EventType.VEHICLE_ENTERED: "Ты сел в транспорт.",
+    EventType.VEHICLE_EXITED: "Ты вышел из транспорта.",
     EventType.PLAYER_IDLE: "Ты уже некоторое время стоишь на месте.",
+    EventType.PLAYER_MOVED_AFTER_IDLE: "Снова в движении.",
 }
 
 REACTION_PRIORITY = {
@@ -48,6 +51,22 @@ class TemplateReactionProvider:
 
     def text_for(self, event: GameEvent) -> str | None:
         return TEMPLATES.get(event.event_type)
+
+    def text_for_opportunity(self, opportunity: ReactionOpportunity) -> str:
+        return self.text_for_focus(opportunity.focus)
+
+    def text_for_focus(self, focus: ReactionFocus) -> str:
+        templates = {
+            ReactionFocus.SESSION_GREETING: "Я подключилась и наблюдаю за происходящим.",
+            ReactionFocus.DANGER_WARNING: "Здоровье критическое. Найди укрытие.",
+            ReactionFocus.COMBAT_COMMENT: "Начался бой. Будь внимательнее.",
+            ReactionFocus.RECOVERY_COMMENT: "Стало лучше. Опасность немного отступила.",
+            ReactionFocus.SCENE_RESOLUTION: "Похоже, всё закончилось.",
+            ReactionFocus.VEHICLE_COMMENT: "Теперь ты в транспорте.",
+            ReactionFocus.IDLE_COMMENT: "Ты уже некоторое время не двигаешься.",
+            ReactionFocus.EXPLORATION_COMMENT: "Пока всё спокойно.",
+        }
+        return templates[focus]
 
 
 class DeferredSienaCoreProvider:
@@ -108,6 +127,16 @@ class ReactionPlanner:
                 self._event_count += 1
                 self._last_event_at = clock
                 logger.info("reaction_suppressed event_type=%s reason=not_reaction_eligible", event.event_type)
+                return False
+            return self._reserve_locked(event, clock)
+
+    async def reserve_opportunity(self, event: GameEvent, now: datetime | None = None) -> bool:
+        """Apply only technical cooldowns; scene policy owns semantic eligibility."""
+        clock = now or datetime.now(timezone.utc)
+        async with self._lock:
+            if not self.enabled:
+                self._event_count += 1
+                self._last_event_at = clock
                 return False
             return self._reserve_locked(event, clock)
 
