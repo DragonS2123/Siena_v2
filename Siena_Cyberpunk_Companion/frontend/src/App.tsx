@@ -2,6 +2,7 @@ import {useEffect,useMemo,useState} from 'react'
 import {useObserver} from './useObserver'
 import {useVoicePlayback} from './useVoicePlayback'
 import {lifecycleCanReplace,selectLiveReaction} from './reactionView'
+import {formatResource,shortenWeaponRecord} from './deepGameStateView'
 import type {BridgeCapabilities,Intent,Priority,ReactionGenerationStatus,ReactionProviderStatus,SceneContext,SienaReaction,VoiceClipReady,VoiceGenerationStatus} from './types'
 
 const priorities:Priority[]=['P0_CRITICAL','P1_HIGH','P2_MEDIUM','P3_LOW']
@@ -56,14 +57,19 @@ export default function App(){
   const execute=async(intent:Intent)=>{setError('');try{await sendCommand(intent)}catch(reason){setError(reason instanceof Error?reason.message:'Command failed')}}
   const age=status.last_packet_at?Math.max(0,Math.round((Date.now()-new Date(status.last_packet_at).getTime())/1000))+'s ago':'never'
   const capabilityValue=(capability:keyof BridgeCapabilities,value:boolean|undefined)=>state?.source==='cet'&&bridge&&!bridge.capabilities[capability]?'Unavailable':yes(value??false)
+  const deep=state?.deep_game_state
+  const deepHealth=formatResource(deep?.stat_pools?.current_health,deep?.stat_pools?.maximum_health)
+  const deepRam=formatResource(deep?.stat_pools?.current_memory,deep?.stat_pools?.maximum_memory)
+  const weaponName=shortenWeaponRecord(deep?.weapon?.record_id)
 
   return <main>
-    <header><div><p className="eyebrow">NIGHT CITY TELEMETRY LINK · V0.7 READ-ONLY</p><h1>Siena Cyberpunk Companion</h1></div><div className="status-strip"><span className={`dot ${socketState}`}/><b>WS {socketState}</b><span>BACKEND {status.backend}</span><b className="source">{state?.source==='cet'?'CYBERPUNK CET':'SIMULATOR'}</b><span>SESSION {sessionId??'—'}</span><span>PACKET {age}</span></div></header>
+    <header><div><p className="eyebrow">NIGHT CITY TELEMETRY LINK · V0.8.2 READ-ONLY</p><h1>Siena Cyberpunk Companion</h1></div><div className="status-strip"><span className={`dot ${socketState}`}/><b>WS {socketState}</b><span>BACKEND {status.backend}</span><b className="source">{state?.source==='cet'?'CYBERPUNK CET':'SIMULATOR'}</b><span>SESSION {sessionId??'—'}</span><span>PACKET {age}</span></div></header>
     {bridge?.source_conflict&&<div className="conflict">SOURCE CONFLICT · simulator and CET are both sending telemetry. Active source: {bridge.active_source.toUpperCase()}.</div>}
     {!state&&<div className="offline">Waiting for telemetry. The panel remains available while the backend or telemetry source is offline.</div>}
     <div className="grid">
       <Card title="Telemetry"><Row label="Running" value={yes(state?.game.running??false)}/><Row label="Loaded" value={yes(state?.game.loaded??false)}/><Row label="Paused" value={capabilityValue('pause_state',state?.game.paused)}/><Row label="District" value={state?.source==='cet'&&bridge&&!bridge.capabilities.district?'Unavailable':state?.environment.district??'—'}/></Card>
       <Card title="Player"><div className="meter"><i style={{width:`${state?percent(state.player.health,state.player.max_health):0}%`}}/></div><Row label="Health" value={state?`${state.player.health} / ${state.player.max_health} (${percent(state.player.health,state.player.max_health)}%)`:'—'} hot={!!state&&percent(state.player.health,state.player.max_health)<=25}/><Row label="Combat" value={capabilityValue('combat_state',state?.player.in_combat)}/><Row label="Vehicle" value={capabilityValue('vehicle_state',state?.player.in_vehicle)}/><Row label="Position" value={state?`${state.player.position.x.toFixed(1)}, ${state.player.position.y.toFixed(1)}, ${state.player.position.z.toFixed(1)}`:'—'}/></Card>
+      <Card title="Deep Game State"><Row label="Health" value={deepHealth.text} hot={deepHealth.percent!=null&&deepHealth.percent<=25}/><Row label="RAM / Memory" value={deepRam.text} hot={deepRam.percent!=null&&deepRam.percent<=25}/><Row label="Weapon" value={weaponName==='—'?'—':`${weaponName} · ${deep?.weapon?.drawn?'drawn':'holstered'}`}/><Row label="Status effects" value={deep?.status_effects?.observed_count??'—'}/><Row label="Level / Street Cred" value={deep?.stats?.level!=null||deep?.stats?.street_cred!=null?`${deep?.stats?.level??'—'} / ${deep?.stats?.street_cred??'—'}`:'—'}/><Row label="Armor" value={deep?.stats?.armor??'—'}/></Card>
       <Card title="Current Scene"><SceneTags phase={scene?.phase} focus={liveReaction?.focus??lifecycle?.focus}/><Row label="State" value={scene?.summary??'Waiting for a meaningful scene'}/><Row label="Severity" value={scene?.severity??'—'} hot={scene?.severity==='critical'}/><Row label="Health trend" value={scene?.health_trend?.replaceAll('_',' ')??'—'}/><Row label="Reactions" value={scene?.reaction_count??0}/></Card>
       <Card title="Companion"><Row label="Present" value={yes(state?.companion.present??false)}/><Row label="Health" value={state?`${state.companion.health} / ${state.companion.max_health}`:'—'}/><Row label="Distance" value={state?`${state.companion.distance_to_player.toFixed(1)} m`:'—'} hot={(state?.companion.distance_to_player??0)>20}/><Row label="Moving" value={yes(state?.companion.moving??false)}/><Row label="Intent" value={state?.companion.current_intent??'—'}/><Row label="Stuck" value={yes(state?.derived?.companion_stuck??false)} hot={state?.derived?.companion_stuck}/></Card>
       <Card title="Reaction Planner"><Row label="Enabled" value={status.planner?.enabled?'YES':'NO'}/><Row label="Provider" value={status.planner?.provider??'template'}/><Row label="Events / reactions" value={`${status.planner?.event_count??events.length} / ${status.planner?.reaction_count??reactions.length}`}/><Row label="Cooldown" value={`${Math.ceil(status.planner?.cooldown_remaining_seconds??0)}s`}/></Card>

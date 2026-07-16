@@ -5,7 +5,7 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "siena-cyberpunk-companion", "version": "0.8.1"}
+    return {"status": "ok", "service": "siena-cyberpunk-companion", "version": "0.8.2"}
 
 
 @router.get("/api/v1/status")

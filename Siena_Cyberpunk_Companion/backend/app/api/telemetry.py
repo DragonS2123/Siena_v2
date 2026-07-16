@@ -48,6 +48,7 @@ async def ingest_state(state: GameState, request: Request) -> dict:
         observed_at=datetime.now(timezone.utc),
     )
     accepted = services.filter.process(generated)
+    scene_state_changed = services.scene_builder.observe_state(state, capabilities)
     await services.bus.publish("state", services.state_payload(state))
     commands = []
     reactions = []
@@ -57,6 +58,11 @@ async def ingest_state(state: GameState, request: Request) -> dict:
             reactions.append(reaction)
         if command:
             commands.append(command)
+    scene_state_changed = services.scene_builder.observe_state(state, capabilities) or scene_state_changed
+    if scene_state_changed:
+        scene = services.scene_builder.current()
+        if scene is not None:
+            await services.bus.publish("scene_context_updated", scene)
     await services.bus.publish("bridge_status", await services.bridge_registry.status())
     return {"accepted": True, "active": True, "active_source": active_source, "session_id": state.session_id, "sequence": state.sequence, "events_published": len(accepted), "reactions_created": len(reactions), "commands_created": len(commands)}
 

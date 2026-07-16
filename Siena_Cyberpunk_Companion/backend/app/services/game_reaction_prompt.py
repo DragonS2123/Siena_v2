@@ -22,6 +22,9 @@ class GameReactionPromptBuilder:
         safe_data = {key: value for key, value in event.payload.items() if key in {
             "previous_health", "current_health", "max_health", "health_percent", "damage_amount",
             "total_damage", "hits", "healed_amount", "duration_seconds",
+            "current_ram", "max_ram", "ram_percent", "ram_state",
+            "active_weapon_record_id", "previous_weapon_record_id", "weapon_drawn",
+            "status_effect_count", "previous_status_effect_count",
         }}
         history = [
             {"type": str(item.event_type), "severity": str(item.severity), "summary": item.summary}
@@ -50,8 +53,20 @@ class GameReactionPromptBuilder:
                 "peak_severity": str(scene.peak_severity),
                 "health_current": scene.health_current,
                 "health_max": scene.health_max,
+                "health_maximum": scene.health_maximum,
                 "health_percent": scene.health_percent,
+                "health_state": scene.health_state,
                 "health_trend": str(scene.health_trend),
+                "ram_current": scene.ram_current,
+                "ram_maximum": scene.ram_maximum,
+                "ram_percent": scene.ram_percent,
+                "ram_state": scene.ram_state,
+                "active_weapon_record_id": scene.active_weapon_record_id,
+                "weapon_drawn": scene.weapon_drawn,
+                "status_effect_count": scene.status_effect_count,
+                "level": scene.level,
+                "street_cred": scene.street_cred,
+                "armor": scene.armor,
                 "total_damage": scene.total_damage,
                 "total_healing": scene.total_healing,
                 "damage_hits": scene.damage_hits,

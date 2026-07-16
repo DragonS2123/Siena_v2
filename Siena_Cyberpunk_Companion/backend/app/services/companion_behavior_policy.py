@@ -49,6 +49,17 @@ class CompanionBehaviorPolicy:
             return self._suppress(event.event_id, "duplicate_semantic_event")
         if normalized.diagnostic_only:
             return self._suppress(event.event_id, "no_meaningful_change")
+        availability_guarded = (
+            any(key in event.payload for key in {"player_available", "session_available", "is_pre_game"})
+            or scene.player_available is not None
+            or scene.session_available is not None
+            or scene.is_pre_game is not None
+        )
+        if availability_guarded:
+            if scene.player_available is not True or scene.session_available is not True:
+                return self._suppress(event.event_id, "player_unavailable")
+            if scene.is_pre_game is not False:
+                return self._suppress(event.event_id, "pre_game")
 
         semantic = normalized.semantic_type
         focus: ReactionFocus | None = None
@@ -86,6 +97,24 @@ class CompanionBehaviorPolicy:
                 return self._suppress(event.event_id, "no_meaningful_change")
             focus = ReactionFocus.RECOVERY_COMMENT
             reason = "recovery"
+        elif semantic == EventType.PLAYER_RAM_EXHAUSTED.value:
+            focus = ReactionFocus.RAM_WARNING
+            priority = EventPriority.P1_HIGH
+            reason = "ram_exhausted"
+        elif semantic == EventType.PLAYER_RAM_LOW.value:
+            focus = ReactionFocus.RAM_WARNING
+            priority = EventPriority.P2_MEDIUM
+            reason = "ram_low"
+        elif semantic == EventType.PLAYER_RAM_RECOVERED.value:
+            focus = ReactionFocus.RESOURCE_RECOVERY
+            priority = EventPriority.P2_MEDIUM
+            reason = "ram_recovered"
+        elif semantic in {EventType.WEAPON_DRAWN.value, EventType.WEAPON_HOLSTERED.value, EventType.WEAPON_CHANGED.value}:
+            if scene.combat_state is not True:
+                return self._suppress(event.event_id, "no_meaningful_change")
+            focus = ReactionFocus.EQUIPMENT_CHANGE
+            priority = EventPriority.P3_LOW
+            reason = "weapon_state_changed"
         elif semantic == EventType.COMBAT_ENDED.value:
             if scene.combat_state is not False:
                 return self._suppress(event.event_id, "capability_unavailable")

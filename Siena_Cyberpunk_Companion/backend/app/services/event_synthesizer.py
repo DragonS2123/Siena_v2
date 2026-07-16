@@ -8,6 +8,7 @@ from app.models.bridge import BridgeCapabilities
 from app.models.game_event import EventType, GameEvent
 from app.models.game_state import GameState
 from app.services.state_diff import StateChange
+from app.services.deep_game_state_awareness import DeepGameStateAwareness
 
 logger = logging.getLogger("siena_observer.events")
 
@@ -61,6 +62,7 @@ class EventSynthesizer:
         self._last_seen: dict[tuple[str, str], tuple[datetime, GameState]] = {}
         self._ended: set[tuple[str, str]] = set()
         self._active_session_by_source: dict[str, str] = {}
+        self.deep_awareness = DeepGameStateAwareness()
 
     @staticmethod
     def _percent(value: float, maximum: float) -> float:
@@ -112,6 +114,7 @@ class EventSynthesizer:
         caps = capabilities or self._all_capabilities()
         events: list[GameEvent] = []
         new_session = previous is None or previous.session_id != current.session_id
+        deep_contract_present = current.deep_game_state is not None
 
         old_session = self._active_session_by_source.get(current.source)
         if old_session and old_session != current.session_id:
@@ -125,7 +128,15 @@ class EventSynthesizer:
             return new_session or any(change.path == path for change in changes)
 
         if new_session:
-            events.append(self._event(current, EventType.SESSION_STARTED, EventPriority.P2_MEDIUM, now=clock))
+            session_payload = {}
+            if current.deep_game_state and current.deep_game_state.player:
+                deep_player = current.deep_game_state.player
+                session_payload = {
+                    "player_available": deep_player.entity_available,
+                    "session_available": deep_player.session_available,
+                    "is_pre_game": deep_player.is_pre_game,
+                }
+            events.append(self._event(current, EventType.SESSION_STARTED, EventPriority.P2_MEDIUM, session_payload, now=clock))
             if current.game.running:
                 events.append(self._event(current, EventType.GAME_STARTED, EventPriority.P2_MEDIUM, now=clock))
             if current.game.loaded:
@@ -152,7 +163,7 @@ class EventSynthesizer:
             if not previous.game.loaded and current.game.loaded:
                 events.append(self._event(current, EventType.GAME_LOADED, EventPriority.P2_MEDIUM, now=clock))
 
-            if caps.player_health and current.player.health < previous.player.health:
+            if caps.player_health and not deep_contract_present and current.player.health < previous.player.health:
                 damage = previous.player.health - current.player.health
                 current_pct = self._percent(current.player.health, current.player.max_health)
                 events.append(self._event(current, EventType.PLAYER_DAMAGED, EventPriority.P1_HIGH, {
@@ -164,7 +175,7 @@ class EventSynthesizer:
                     "health_percent": current_pct,
                 }, now=clock))
 
-            if caps.player_health and current.player.health > previous.player.health:
+            if caps.player_health and not deep_contract_present and current.player.health > previous.player.health:
                 recovered_pct = (current.player.health - previous.player.health) / current.player.max_health * 100.0
                 if recovered_pct >= self.heal_threshold_percent:
                     events.append(self._event(current, EventType.PLAYER_HEALED, EventPriority.P2_MEDIUM, {
@@ -176,7 +187,7 @@ class EventSynthesizer:
 
             previous_pct = self._percent(previous.player.health, previous.player.max_health)
             current_pct = self._percent(current.player.health, current.player.max_health)
-            if caps.player_health:
+            if caps.player_health and not deep_contract_present:
                 if previous_pct > PLAYER_LOW_HEALTH_PERCENT >= current_pct:
                     events.append(self._event(current, EventType.PLAYER_HEALTH_BELOW_50, EventPriority.P1_HIGH, {"health_percent": current_pct}, now=clock))
                 if previous_pct > PLAYER_CRITICAL_HEALTH_PERCENT >= current_pct:
@@ -203,7 +214,7 @@ class EventSynthesizer:
             if previous.companion.distance_to_player > self.too_far_meters >= current.companion.distance_to_player:
                 events.append(self._event(current, EventType.COMPANION_REGROUPED, EventPriority.P2_MEDIUM, {"distance": current.companion.distance_to_player}, now=clock))
 
-        if caps.player_health:
+        if caps.player_health and not deep_contract_present:
             current_pct = self._percent(current.player.health, current.player.max_health)
             if current_pct > self.health_recovery_percent:
                 self._health_low.discard(current.session_id)
@@ -222,6 +233,7 @@ class EventSynthesizer:
         if caps.player_position:
             self._update_idle(previous, current, clock, events)
         self._update_stuck(previous, current, clock, events)
+        events.extend(self.deep_awareness.synthesize(previous, current, clock))
         return events
 
     def _update_idle(self, previous: GameState | None, current: GameState, now: datetime, events: list[GameEvent]) -> None:

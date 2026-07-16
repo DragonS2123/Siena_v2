@@ -5,6 +5,7 @@ from typing import Callable
 
 from app.models.bridge import BridgeCapabilities
 from app.models.game_event import EventSeverity, EventType, GameEvent
+from app.models.game_state import GameState
 from app.models.scene import (
     HealthTrend,
     NormalizedSceneEvent,
@@ -14,6 +15,7 @@ from app.models.scene import (
     SceneUpdate,
 )
 from app.services.scene_event_normalizer import SceneEventNormalizer
+from app.services.deep_game_state_awareness import DeepGameStateAwareness
 
 logger = logging.getLogger("siena_observer.scene")
 
@@ -68,6 +70,55 @@ class SceneContextBuilder:
     def record_reaction(self, scene_id: str) -> None:
         if self._current and self._current.scene_id == scene_id:
             self._current.reaction_count += 1
+
+    def observe_state(self, state: GameState, capabilities: BridgeCapabilities | None = None) -> bool:
+        """Refresh nullable awareness fields without turning every telemetry packet into an event."""
+        scene = self._current
+        deep = state.deep_game_state
+        if not self.enabled or scene is None or scene.session_id != state.session_id or deep is None:
+            return False
+        before = self._deep_fingerprint(scene)
+        player = deep.player
+        scene.player_available = player.entity_available if player else None
+        scene.session_available = player.session_available if player else None
+        scene.is_pre_game = player.is_pre_game if player else None
+
+        health = DeepGameStateAwareness.health_resource(state)
+        if health:
+            scene.health_current, scene.health_maximum, scene.health_percent = health
+            scene.health_max = scene.health_maximum
+            scene.health_state = DeepGameStateAwareness.health_label(scene.health_percent)
+        else:
+            scene.health_current = scene.health_max = scene.health_maximum = scene.health_percent = None
+            scene.health_state = None
+
+        ram = DeepGameStateAwareness.ram_resource(state)
+        if ram:
+            scene.ram_current, scene.ram_maximum, scene.ram_percent = ram
+            scene.ram_state = DeepGameStateAwareness.ram_label(scene.ram_percent)
+        else:
+            scene.ram_current = scene.ram_maximum = scene.ram_percent = None
+            scene.ram_state = None
+
+        weapon = deep.weapon
+        scene.active_weapon_record_id = DeepGameStateAwareness.stable_weapon_id(weapon.record_id) if weapon else None
+        scene.weapon_drawn = weapon.drawn if weapon else None
+        effects = deep.status_effects
+        scene.status_effect_count = effects.observed_count if effects else None
+        stats = deep.stats
+        scene.level = stats.level if stats else None
+        scene.street_cred = stats.street_cred if stats else None
+        scene.armor = stats.armor if stats else None
+        scene.vehicle_state = state.player.in_vehicle if (capabilities or scene.capabilities).vehicle_state else scene.vehicle_state
+        if capabilities is not None:
+            scene.capabilities = capabilities
+        scene.notable_facts = self._facts(scene)
+        changed = before != self._deep_fingerprint(scene)
+        if changed:
+            scene.updated_at = state.captured_at
+            scene.revision += 1
+            logger.info("scene_deep_state_updated scene_id=%s revision=%s", scene.scene_id, scene.revision)
+        return changed
 
     def apply(
         self,
@@ -251,13 +302,36 @@ class SceneContextBuilder:
             scene.peak_severity = severity
 
         payload = event.payload
+        if "player_available" in payload:
+            scene.player_available = payload["player_available"]
+        if "session_available" in payload:
+            scene.session_available = payload["session_available"]
+        if "is_pre_game" in payload:
+            scene.is_pre_game = payload["is_pre_game"]
         previous_pct = scene.health_percent
         if "current_health" in payload:
             scene.health_current = float(payload["current_health"])
         if "max_health" in payload:
             scene.health_max = float(payload["max_health"])
+            scene.health_maximum = scene.health_max
         if "health_percent" in payload:
             scene.health_percent = float(payload["health_percent"])
+        if "health_state" in payload:
+            scene.health_state = str(payload["health_state"])
+        if "current_ram" in payload:
+            scene.ram_current = float(payload["current_ram"])
+        if "max_ram" in payload:
+            scene.ram_maximum = float(payload["max_ram"])
+        if "ram_percent" in payload:
+            scene.ram_percent = float(payload["ram_percent"])
+        if "ram_state" in payload:
+            scene.ram_state = str(payload["ram_state"])
+        if "active_weapon_record_id" in payload:
+            scene.active_weapon_record_id = payload["active_weapon_record_id"]
+        if "weapon_drawn" in payload:
+            scene.weapon_drawn = bool(payload["weapon_drawn"])
+        if "status_effect_count" in payload:
+            scene.status_effect_count = int(payload["status_effect_count"])
         if normalized.semantic_type == EventType.PLAYER_DAMAGED.value:
             scene.total_damage += float(payload.get("total_damage", payload.get("damage_amount", 0)))
             scene.damage_hits += int(payload.get("hits", 1))
@@ -324,8 +398,22 @@ class SceneContextBuilder:
         return (
             scene.phase, scene.severity, scene.health_trend,
             round(scene.health_percent, 1) if scene.health_percent is not None else None,
+            scene.health_state,
+            round(scene.ram_percent, 1) if scene.ram_percent is not None else None,
+            scene.ram_state, scene.active_weapon_record_id, scene.weapon_drawn,
+            scene.status_effect_count, scene.level, scene.street_cred, scene.armor,
             scene.combat_state, scene.vehicle_state,
             round(scene.total_damage, 1), round(scene.total_healing, 1), scene.damage_hits,
+        )
+
+    @staticmethod
+    def _deep_fingerprint(scene: SceneContext) -> tuple:
+        return (
+            scene.health_current, scene.health_maximum, scene.health_percent, scene.health_state,
+            scene.ram_current, scene.ram_maximum, scene.ram_percent, scene.ram_state,
+            scene.active_weapon_record_id, scene.weapon_drawn, scene.status_effect_count,
+            scene.level, scene.street_cred, scene.armor,
+            scene.player_available, scene.session_available, scene.is_pre_game, scene.vehicle_state,
         )
 
     @staticmethod
@@ -335,10 +423,16 @@ class SceneContextBuilder:
             facts.append("combat is active")
         if scene.health_percent is not None:
             facts.append(f"health is {scene.health_percent:.0f}%")
+        if scene.ram_percent is not None:
+            facts.append(f"RAM is {scene.ram_percent:.0f}%")
         if scene.damage_hits:
             facts.append(f"{scene.damage_hits} damage hits")
         if scene.vehicle_state is True:
             facts.append("player is in a vehicle")
+        if scene.weapon_drawn is True and scene.active_weapon_record_id:
+            facts.append(f"weapon is drawn: {scene.active_weapon_record_id}")
+        if scene.status_effect_count is not None:
+            facts.append(f"status effect count is {scene.status_effect_count}")
         return facts[:6]
 
     @staticmethod

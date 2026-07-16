@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -41,6 +41,9 @@ class ReactionFocus(StrEnum):
     VEHICLE_COMMENT = "vehicle_comment"
     IDLE_COMMENT = "idle_comment"
     SCENE_RESOLUTION = "scene_resolution"
+    RAM_WARNING = "ram_warning"
+    RESOURCE_RECOVERY = "resource_recovery"
+    EQUIPMENT_CHANGE = "equipment_change"
 
 
 class SceneEventSummary(BaseModel):
@@ -84,8 +87,23 @@ class SceneContext(BaseModel):
     primary_event_type: str | None = None
     health_current: float | None = None
     health_max: float | None = None
+    health_maximum: float | None = None
     health_percent: float | None = None
+    health_state: Literal["normal", "low", "critical"] | None = None
     health_trend: HealthTrend = HealthTrend.UNKNOWN
+    ram_current: float | None = None
+    ram_maximum: float | None = None
+    ram_percent: float | None = None
+    ram_state: Literal["normal", "low", "exhausted"] | None = None
+    active_weapon_record_id: str | None = Field(default=None, max_length=256)
+    weapon_drawn: bool | None = None
+    status_effect_count: int | None = Field(default=None, ge=0, le=256)
+    level: float | None = None
+    street_cred: float | None = None
+    armor: float | None = None
+    player_available: bool | None = None
+    session_available: bool | None = None
+    is_pre_game: bool | None = None
     total_damage: float = Field(default=0, ge=0)
     total_healing: float = Field(default=0, ge=0)
     damage_hits: int = Field(default=0, ge=0)

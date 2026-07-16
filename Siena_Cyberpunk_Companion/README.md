@@ -1,6 +1,6 @@
-# Siena Cyberpunk Companion v0.8.1
+# Siena Cyberpunk Companion v0.8.2
 
-Read-only companion pipeline for Cyberpunk 2077. It accepts the existing CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, and preserves the v0.7 in-game presence path. v0.8.1 adds only the first live-confirmed, nullable Deep Game State slice; see [V0.8.1_DEEP_GAME_STATE.md](V0.8.1_DEEP_GAME_STATE.md).
+Read-only companion pipeline for Cyberpunk 2077. It accepts the existing CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, and preserves the v0.7 in-game presence path. v0.8.1 added the first live-confirmed nullable data slice; v0.8.2 adds backend awareness, SceneContext projection and a compact frontend view without changing CET runtime APIs. See [V0.8.2_DEEP_GAME_STATE_AWARENESS.md](V0.8.2_DEEP_GAME_STATE_AWARENESS.md).
 
 It does **not** send commands to Cyberpunk, control the player/NPCs, play audio in CET, start Siena/Ollama, or invoke TTS from Lua. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod. Siena Core, voice, backend presence, and local CET presence are separate opt-ins.
 

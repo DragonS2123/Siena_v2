@@ -7,8 +7,10 @@ logger = logging.getLogger("siena_observer.scene")
 
 
 SEMANTIC_ALIASES: dict[EventType, EventType] = {
+    EventType.PLAYER_HEALTH_LOW: EventType.HEALTH_LOW,
     EventType.PLAYER_HEALTH_BELOW_50: EventType.HEALTH_LOW,
     EventType.PLAYER_HEALTH_CRITICAL: EventType.HEALTH_CRITICAL,
+    EventType.PLAYER_HEALTH_RECOVERED: EventType.PLAYER_HEALED,
     EventType.PLAYER_RECOVERED: EventType.PLAYER_HEALED,
     EventType.PLAYER_ENTERED_VEHICLE: EventType.VEHICLE_ENTERED,
     EventType.PLAYER_EXITED_VEHICLE: EventType.VEHICLE_EXITED,

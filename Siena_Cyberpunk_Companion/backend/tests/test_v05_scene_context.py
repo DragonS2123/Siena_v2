@@ -62,6 +62,7 @@ def test_health_trend_contract(value):
 @pytest.mark.parametrize("value", [
     "session_greeting", "danger_warning", "combat_comment", "recovery_comment",
     "exploration_comment", "vehicle_comment", "idle_comment", "scene_resolution",
+    "ram_warning", "resource_recovery", "equipment_change",
 ])
 def test_reaction_focus_contract(value):
     assert ReactionFocus(value).value == value
@@ -69,8 +70,10 @@ def test_reaction_focus_contract(value):
 
 @pytest.mark.parametrize(("alias", "semantic"), [
     (EventType.PLAYER_HEALTH_BELOW_50, EventType.HEALTH_LOW),
+    (EventType.PLAYER_HEALTH_LOW, EventType.HEALTH_LOW),
     (EventType.PLAYER_HEALTH_CRITICAL, EventType.HEALTH_CRITICAL),
     (EventType.PLAYER_RECOVERED, EventType.PLAYER_HEALED),
+    (EventType.PLAYER_HEALTH_RECOVERED, EventType.PLAYER_HEALED),
     (EventType.PLAYER_ENTERED_VEHICLE, EventType.VEHICLE_ENTERED),
     (EventType.PLAYER_EXITED_VEHICLE, EventType.VEHICLE_EXITED),
 ])

@@ -65,6 +65,9 @@ class TemplateReactionProvider:
             ReactionFocus.VEHICLE_COMMENT: "Теперь ты в транспорте.",
             ReactionFocus.IDLE_COMMENT: "Ты уже некоторое время не двигаешься.",
             ReactionFocus.EXPLORATION_COMMENT: "Пока всё спокойно.",
+            ReactionFocus.RAM_WARNING: "Оперативной памяти осталось мало.",
+            ReactionFocus.RESOURCE_RECOVERY: "Оперативная память восстановилась.",
+            ReactionFocus.EQUIPMENT_CHANGE: "Оружие сменилось.",
         }
         return templates[focus]
 
