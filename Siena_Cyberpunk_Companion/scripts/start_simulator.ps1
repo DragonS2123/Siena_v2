@@ -1,4 +1,30 @@
-param([ValidateSet('exploration','combat','critical_health','vehicle','companion_stuck','v03_readonly','v04_siena_core')][string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
+﻿param([string]$Scenario='exploration',[double]$Speed=1.0,[switch]$Loop)
+
+# Validate the scenario against simulator/scenarios/*.json.
+$ScenarioDirectory = Join-Path $PSScriptRoot "..\simulator\scenarios"
+$ScenarioValidationPath = Join-Path $ScenarioDirectory ($Scenario + ".json")
+
+if (-not (Test-Path -LiteralPath $ScenarioValidationPath -PathType Leaf)) {
+    $AvailableScenarios = @(
+        Get-ChildItem `
+            -LiteralPath $ScenarioDirectory `
+            -Filter "*.json" `
+            -File `
+            -ErrorAction SilentlyContinue |
+        Sort-Object BaseName |
+        Select-Object -ExpandProperty BaseName
+    )
+
+    $AvailableText = if ($AvailableScenarios.Count -gt 0) {
+        $AvailableScenarios -join "; "
+    }
+    else {
+        "<none>"
+    }
+
+    throw "Scenario '$Scenario' not found. Available: $AvailableText"
+}
+
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $Root '.venv\Scripts\python.exe'

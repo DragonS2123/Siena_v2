@@ -59,6 +59,44 @@ class Settings(BaseSettings):
     scene_resolution_reaction_enabled: bool = True
     scene_reaction_stale_grace_seconds: float = Field(default=3.0, ge=0)
     scene_recent_reactions_limit: int = Field(default=5, ge=1, le=5)
+    voice_enabled: bool = False
+    voice_muted: bool = False
+    voice_min_interval_seconds: float = Field(default=8.0, ge=0)
+    voice_same_text_cooldown_seconds: float = Field(default=120.0, ge=0)
+    voice_scene_max_clips: int = Field(default=3, ge=1, le=20)
+    voice_critical_bypass: bool = True
+    voice_max_text_chars: int = Field(default=240, ge=20, le=500)
+    voice_max_event_age_seconds: float = Field(default=30.0, gt=0)
+    voice_queue_size: int = Field(default=20, ge=2, le=200)
+    voice_clip_history_limit: int = Field(default=100, ge=5, le=1000)
+    voice_audio_ttl_seconds: float = Field(default=300.0, gt=0)
+    voice_post_play_gap_ms: int = Field(default=250, ge=0, le=5000)
+    voice_language: Literal["ru", "en"] = "ru"
+    voice_speaker: str = Field(default="", max_length=128)
+    voice_volume: float = Field(default=0.85, ge=0, le=1)
+    voice_require_tts_ready: bool = True
+    voice_interrupt_mode: Literal["never", "critical_only"] = "critical_only"
+    tts_base_url: str = ""
+    tts_api_token: str = ""
+    tts_connect_timeout_seconds: float = Field(default=2.0, gt=0)
+    tts_request_timeout_seconds: float = Field(default=60.0, gt=0)
+    tts_max_retries: int = Field(default=1, ge=0, le=1)
+    tts_max_audio_bytes: int = Field(default=15_000_000, ge=1024, le=100_000_000)
+    tts_circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    tts_circuit_reset_seconds: float = Field(default=30.0, gt=0)
+    presence_enabled: bool = False
+    presence_poll_interval_ms: int = Field(default=500, ge=100, le=60_000)
+    presence_http_timeout_ms: int = Field(default=1000, ge=250, le=30_000)
+    presence_generating_delay_ms: int = Field(default=400, ge=0, le=10_000)
+    presence_normal_duration_ms: int = Field(default=8000, ge=500, le=120_000)
+    presence_high_duration_ms: int = Field(default=10_000, ge=500, le=120_000)
+    presence_critical_duration_ms: int = Field(default=14_000, ge=500, le=120_000)
+    presence_fallback_duration_ms: int = Field(default=7000, ge=500, le=120_000)
+    presence_fade_in_ms: int = Field(default=180, ge=0, le=10_000)
+    presence_fade_out_ms: int = Field(default=450, ge=0, le=10_000)
+    presence_max_text_chars: int = Field(default=320, ge=32, le=320)
+    presence_error_backoff_ms: int = Field(default=2000, ge=250, le=60_000)
+    presence_max_backoff_ms: int = Field(default=30_000, ge=1000, le=300_000)
     companion_too_far_meters: float = Field(default=20.0, gt=0)
     companion_stuck_seconds: float = Field(default=5.0, gt=0)
     companion_movement_epsilon: float = Field(default=0.25, gt=0)

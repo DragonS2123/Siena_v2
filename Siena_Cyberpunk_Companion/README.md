@@ -1,8 +1,8 @@
-# Siena Cyberpunk Companion v0.5
+# Siena Cyberpunk Companion v0.8.1
 
-Read-only companion pipeline for Cyberpunk 2077. It accepts the existing v0.2 CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, builds a bounded deterministic scene context, and lets a behavior policy decide whether Siena should react or remain silent. v0.5 preserves the v0.4.1 Core integration, queue, fallbacks, lifecycle, REST/WebSocket compatibility, and React history.
+Read-only companion pipeline for Cyberpunk 2077. It accepts the existing CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, and preserves the v0.7 in-game presence path. v0.8.1 adds only the first live-confirmed, nullable Deep Game State slice; see [V0.8.1_DEEP_GAME_STATE.md](V0.8.1_DEEP_GAME_STATE.md).
 
-It does **not** send commands to Cyberpunk, control the player/NPCs, start Siena/Ollama, or use TTS. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod. Siena Core integration is opt-in and fails back to local templates without interrupting telemetry.
+It does **not** send commands to Cyberpunk, control the player/NPCs, play audio in CET, start Siena/Ollama, or invoke TTS from Lua. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod. Siena Core, voice, backend presence, and local CET presence are separate opt-ins.
 
 ## Pipeline
 
@@ -22,9 +22,17 @@ CET bridge or simulator
   -> bounded EventBus
   -> REST + existing /ws
   -> React Current Scene / Game Events / Siena Reactions
+  -> VoiceBehaviorPolicy (published reactions only)
+  -> bounded priority voice queue + one asynchronous worker
+  -> Siena v2 POST /api/external/speech (binary WAV)
+  -> bounded in-memory clip store + REST / existing /ws
+  -> React autoplay unlock + single-tab playback leader
+  -> InGamePresenceProjection (published lifecycle/reaction/voice state only)
+  -> revision-aware local REST polling
+  -> CET compact no-input presence card
 ```
 
-The existing v0.2 bridge remains unchanged. `BridgeRegistry` still negotiates protocol `1.0`, gives live CET priority in `auto`, reports `source_conflict`, and exposes capabilities. A CET capability reported as unavailable is never interpreted as a false game state. Health and position alone are sufficient for the detectors.
+The required v0.2/v0.7 protocol fields remain unchanged. `BridgeRegistry` still negotiates protocol `1.0`, gives live CET priority in `auto`, reports `source_conflict`, and exposes capabilities. v0.8.1 adds optional `deep_game_state` and default-false domain capabilities; bridges and telemetry payloads without them remain valid.
 
 ## Install and run
 
@@ -135,9 +143,69 @@ The primary card shows only the current session. It renders idle, queued, genera
 
 The existing **Siena Reactions** section remains as collapsible diagnostic history. It shows the latest eight current-session reactions by default, can expand to the full bounded local history, and keeps provider/model/latency/fallback/request diagnostics behind secondary disclosure.
 
+## Safe voice reactions
+
+Voice is disabled by default. Text reactions are always published before voice work is considered. `VoiceBehaviorPolicy` accepts only an already-published `SienaReaction`; it never calls Siena Core, rewrites text with an LLM, or voices raw events/lifecycle diagnostics. Danger, critical health, important combat, recovery, scene resolution, and cooldown-safe session greetings are eligible. Duplicate/stale/old-session, weak, muted, over-budget, unsupported, and TTS-unavailable cases remain text-only with structured suppression reasons.
+
+The backend owns one bounded priority queue and one `VoiceWorker`. Critical work can evict weaker queued work from the same scene. A weak request already synthesizing is not cancelled inside Siena's provider; it is marked superseded and its returned WAV is discarded. A separate TTS circuit breaker handles transport/timeouts/5xx/malformed or oversized audio. HTTP 401/403 and other 4xx errors are not retried. No Windows voice fallback is used.
+
+Siena v2 was audited before choosing the contract. The selected provider is currently `qwen3_tts_ggml_vulkan`; Qwen3-TTS, Faster Qwen3-TTS and Silero remain implemented. Stable synthesis is completed WAV. The experimental raw PCM stream is qwentts.cpp-only and has a documented upstream-cancellation limitation, so v0.6 does not use streaming.
+
+Siena v2 adds a minimal local feature-gated endpoint:
+
+```text
+POST /api/external/speech
+Content-Type: application/json
+Accept: audio/wav
+
+{"request_id":"...","text":"...","speaker":null,"language":"ru","audio_format":"wav"}
+```
+
+It returns a binary WAV body with `X-Siena-TTS-*` metadata. It does not invoke chat, tools, web, memory, specialists, conversations, or model routing. It is enabled only through `SIENA_EXTERNAL_SPEECH_ENABLED=true` or Siena's explicit `-EnableExternalSpeech` launcher switch. The status probe does not warm or synthesize TTS. A real synthesis may lazily start the human-selected provider only after both external speech and companion voice have been explicitly enabled.
+
+Companion audio is process-local, in-memory, capped, and removed by TTL. JSON/WebSocket messages contain only clip metadata and `/api/v1/voice/audio/{id}`. Session changes and stale scene revisions suppress queued, synthesizing-result, and ready audio. Playing audio is frontend-owned so the backend remains headless.
+
+The browser requires the user to press **Включить голос**. Playback uses one bounded queue, one `HTMLAudioElement`, saved local volume/mute settings, a critical-only interruption mode, and a short post-play gap. A localStorage/BroadcastChannel lease elects one playback tab; the backend also rejects a second tab's playback acknowledgement. Autoplay rejection returns the UI to the explicit-enable state and never affects telemetry.
+
+Voice REST API:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/voice/status` | cached worker/provider/circuit/queue status; no heavy probe |
+| GET | `/api/v1/voice/clips` | bounded metadata history; optional session filter |
+| GET | `/api/v1/voice/clips/latest` | latest clip metadata or `null` |
+| GET | `/api/v1/voice/audio/{voice_clip_id}` | binary WAV; stale/unknown clips return 404 |
+| POST | `/api/v1/voice/playback-events` | started/completed/failed/cancelled acknowledgement |
+
+Existing `/ws` additionally publishes `voice_generation_status` and `voice_clip_ready`. Ready payloads contain `audio_url`, never audio bytes.
+
+## In-game companion presence
+
+Presence is disabled by default in both backend and CET. `InGamePresenceProjection` subscribes synchronously and lightly to the existing EventBus publications. It projects queued/generating, published reaction/fallback, voice synthesis and actual browser playback into one strict bounded snapshot. It never calls Siena Core or TTS and stores no prompt, exception, token, raw telemetry, audio, or history.
+
+Snapshot revisions are process-local and monotonic. Identical state does not increment revision. Generating appears only after a 400 ms debounce. Published text replaces generating; critical replaces weak content and is held longer; weak updates cannot overwrite a fresh critical card. Session changes clear old presence, while session end lets the last published line expire naturally. Voice ready is not playing: `Сиена говорит` is shown only after browser `playback_started` and removed on completed/failed/cancelled.
+
+CET polls `GET /api/v1/in-game-presence/current?after_revision=N` at most every 500 ms. A newer snapshot returns JSON; unchanged returns 204. One request token is active at a time, errors use capped exponential backoff, and late callbacks cannot mutate newer state. Only `127.0.0.1` and `localhost` are accepted unless the user explicitly changes the safety setting. Polling runs in `onUpdate`; `onDraw` only renders.
+
+The two CET overlays remain independent:
+
+- **Siena Observer diagnostics** appears only while the CET overlay is open.
+- **In-Game Siena Presence** is a separate no-input card during ordinary play, appears only for current content, and fades out automatically.
+
+The card supports six viewport-derived anchors, safe margins, resolution/DPI scaling, word wrap, calm fade, optional fallback/voice labels, and no title/move/resize/navigation/mouse interaction. External `%` is escaped before the proven `TextWrapped` binding. The installed CET NotoSans file contains the Russian test glyphs, but runtime atlas readiness remains explicitly unconfirmed until an in-game visual check. No font binary is shipped.
+
+Presence REST API:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/in-game-presence/current` | strict current snapshot; optional `after_revision`; unchanged is 204 |
+| GET | `/api/v1/in-game-presence/status` | cached projection/consumer/poll/overlay diagnostics; no network probe |
+
+The existing `/ws` emits `in_game_presence_status` only for meaningful enabled/connected/state/revision/error/capability changes. CET does not use WebSocket. React adds an observation-only **In-Game Presence** card and cannot control the overlay.
+
 ## Simulator scenarios
 
-Existing scenarios: `exploration`, `combat`, `critical_health`, `vehicle`, `companion_stuck`, `v03_readonly`, and `v04_siena_core`. v0.5 adds `v05_combat_escalation`, `v05_quick_recovery`, `v05_priority_replacement`, `v05_session_change`, and `v05_silence`.
+Existing scenarios remain available. v0.6 adds `v06_voice_normal`, `v06_voice_priority`, `v06_voice_stale`, `v06_voice_session_change`, `v06_voice_failure`, and `v06_voice_no_overlap`. v0.7 adds `v07_presence_normal`, `v07_presence_critical`, `v07_presence_fallback`, `v07_presence_stale`, `v07_presence_disconnect`, and `v07_presence_unicode`; use fake Siena `unicode` mode for the `%`/quotes/dash/newline response.
 
 `v04_siena_core` supplies meaningful events for Core success/failure checks. `simulator/fake_siena.py` is a deterministic local stand-in with success, delay, 500, 401, 403, malformed, empty, reasoning, long, and recovery modes; tests and smoke checks never need a real external network.
 
@@ -185,6 +253,43 @@ All backend variables use prefix `SIENA_CP_`:
 | `SCENE_RESOLUTION_REACTION_ENABLED` | true |
 | `SCENE_REACTION_STALE_GRACE_SECONDS` | 3 |
 | `SCENE_RECENT_REACTIONS_LIMIT` | 5 |
+| `VOICE_ENABLED` | false |
+| `VOICE_MUTED` | false |
+| `VOICE_MIN_INTERVAL_SECONDS` | 8 |
+| `VOICE_SAME_TEXT_COOLDOWN_SECONDS` | 120 |
+| `VOICE_SCENE_MAX_CLIPS` | 3 |
+| `VOICE_CRITICAL_BYPASS` | true |
+| `VOICE_MAX_TEXT_CHARS` | 240 |
+| `VOICE_MAX_EVENT_AGE_SECONDS` | 30 |
+| `VOICE_QUEUE_SIZE` | 20 |
+| `VOICE_CLIP_HISTORY_LIMIT` | 100 |
+| `VOICE_AUDIO_TTL_SECONDS` | 300 |
+| `VOICE_POST_PLAY_GAP_MS` | 250 |
+| `VOICE_LANGUAGE` | ru |
+| `VOICE_SPEAKER` | empty, use Siena setting |
+| `VOICE_VOLUME` | 0.85 |
+| `VOICE_REQUIRE_TTS_READY` | true |
+| `VOICE_INTERRUPT_MODE` | critical_only |
+| `TTS_BASE_URL` | empty |
+| `TTS_CONNECT_TIMEOUT_SECONDS` | 2 |
+| `TTS_REQUEST_TIMEOUT_SECONDS` | 60 |
+| `TTS_MAX_RETRIES` | 1 |
+| `TTS_MAX_AUDIO_BYTES` | 15000000 |
+| `TTS_CIRCUIT_FAILURE_THRESHOLD` | 3 |
+| `TTS_CIRCUIT_RESET_SECONDS` | 30 |
+| `PRESENCE_ENABLED` | false |
+| `PRESENCE_POLL_INTERVAL_MS` | 500 |
+| `PRESENCE_HTTP_TIMEOUT_MS` | 1000 |
+| `PRESENCE_GENERATING_DELAY_MS` | 400 |
+| `PRESENCE_NORMAL_DURATION_MS` | 8000 |
+| `PRESENCE_HIGH_DURATION_MS` | 10000 |
+| `PRESENCE_CRITICAL_DURATION_MS` | 14000 |
+| `PRESENCE_FALLBACK_DURATION_MS` | 7000 |
+| `PRESENCE_FADE_IN_MS` | 180 |
+| `PRESENCE_FADE_OUT_MS` | 450 |
+| `PRESENCE_MAX_TEXT_CHARS` | 320 |
+| `PRESENCE_ERROR_BACKOFF_MS` | 2000 |
+| `PRESENCE_MAX_BACKOFF_MS` | 30000 |
 
 `SIENA_CORE_PLAYER_NAME` is the sole unprefixed optional setting retained for the user-facing player name. `SIENA_CP_SIENA_CORE_PLAYER_NAME` is accepted as a compatibility alias.
 
@@ -203,12 +308,12 @@ npm.cmd run build
 
 All source templates and API payloads are UTF-8. Windows PowerShell 5.1 can display valid UTF-8 JSON as mojibake because of its console encoding; use PowerShell 7, a browser, or Python for byte-accurate checks. Do not add cp1251/latin1 decode-reencode workarounds to the application.
 
-## Manual v0.5 check
+## Manual v0.7 check
 
-1. In the Siena_v2 root start `scripts/start_backend.ps1 -EnableExternalGameReactions`.
+1. In the Siena_v2 root start `scripts/start_backend.ps1 -EnableExternalGameReactions -EnableExternalSpeech`. This enables the local contracts but does not start or change a TTS provider by itself.
 2. Confirm `GET http://127.0.0.1:8000/api/health` succeeds.
-3. Start companion with `scripts/start_backend.ps1 -ReactionProvider siena_core -SienaCoreUrl 'http://127.0.0.1:8000'`.
-4. Start the frontend and `scripts/start_simulator.ps1 -Scenario v05_combat_escalation -Speed 20`.
+3. Start companion with `scripts/start_backend.ps1 -ReactionProvider siena_core -SienaCoreUrl 'http://127.0.0.1:8000' -VoiceEnabled -TtsUrl 'http://127.0.0.1:8000' -PresenceEnabled`.
+4. Start the frontend, press the explicit **Enable voice** control, then run `scripts/start_simulator.ps1 -Scenario v06_voice_normal -Speed 1`.
 5. Run the simulator at speed 1 or 2 and observe **queued**, then **Сиена формулирует реакцию…**.
 6. Verify bridge/live telemetry continues updating while the request is pending.
 7. Verify a short Russian reaction appears without mojibake and does not call the player Siena.
@@ -226,7 +331,15 @@ All source templates and API payloads are UTF-8. Windows PowerShell 5.1 can disp
 18. Run `v05_session_change`; verify no reaction from the old session appears in the new one.
 19. Run `v05_silence`; verify routine movement/minor changes remain silent while events and scene state stay available.
 
-There is no TTS, voice output, in-game overlay, always-on-top window, game control, or write into ordinary Siena chat in v0.5.
+20. Run the six `v06_voice_*` scenarios and verify priority replacement, stale/session suppression, failure isolation, and no overlap.
+21. Open a second frontend tab; verify only the elected tab plays and the backend rejects conflicting playback acknowledgement.
+22. Disable voice or omit either opt-in flag; verify text reactions and telemetry continue unchanged with no synthesis.
+
+23. Install and verify the bridge using the exact commands in `CET_INSTALLATION.md`, then set local CET presence `enabled=true` via the unbound **Toggle Siena Presence** action or diagnostic preview/settings.
+24. With CET closed, confirm the technical Siena Observer window is absent while the compact presence card can appear.
+25. Verify generating, final text, fallback label, browser-driven voice indicator, expiry, critical replacement, stale suppression, backend disconnect/backoff/recovery, six anchors, Cyrillic, `%`, no input capture, and no visible FPS regression.
+
+v0.7 still has no always-on-top desktop window, game control, game-audio ducking, CET audio, Windows TTS fallback, or write into ordinary Siena chat. Ollama/Siena Core and the selected TTS provider remain separately operator-managed processes.
 
 ## Known limitations
 

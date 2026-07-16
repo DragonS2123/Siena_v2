@@ -9,6 +9,9 @@ local StateBuilder = load_module("state_builder")
 local SessionManager = load_module("session_manager")
 local CapabilityDetector = load_module("capability_detector")
 local TelemetryClient = load_module("telemetry_client")
+local PresenceConfig = load_module("presence_config")
+local PresenceClient = load_module("presence_client")
+local PresenceOverlay = load_module("presence_overlay")
 
 local app = {
   elapsed_ms = 0,
@@ -24,6 +27,15 @@ function app:_hello_payload()
     local ok, value = pcall(GetVersion)
     if ok and value ~= nil then cet_version = tostring(value) end
   end
+  local capabilities = {}
+  for name, available in pairs(self.capability_detector:get()) do capabilities[name] = available end
+  if self.presence_settings ~= nil then
+    capabilities.presence_overlay_supported = true
+    capabilities.presence_overlay_enabled = self.presence_settings.enabled
+    capabilities.presence_overlay_version = "0.7.0"
+    capabilities.presence_font_cyrillic_ready = self.presence_settings.font_cyrillic_ready
+    capabilities.presence_poll_interval_ms = self.presence_settings.poll_interval_ms
+  end
   return {
     bridge_id = Config.bridge_id,
     bridge_version = Config.bridge_version,
@@ -31,7 +43,7 @@ function app:_hello_payload()
     transport = "red_http_client",
     game_version = "unknown-live-check",
     cet_version = cet_version,
-    capabilities = self.capability_detector:get()
+    capabilities = capabilities
   }
 end
 
@@ -87,6 +99,22 @@ function app:_draw_overlay()
     for name, available in pairs(self.capability_detector:get()) do
       ImGui.Text(name .. ": " .. (available and "Available" or "Unavailable"))
     end
+    if self.presence_client ~= nil and self.presence_overlay ~= nil then
+      local metrics = self.presence_client:metrics()
+      ImGui.Separator()
+      ImGui.Text("In-Game Presence v0.7")
+      ImGui.Text("Enabled: " .. (metrics.enabled and "Yes" or "No"))
+      ImGui.Text("Connected: " .. (metrics.connected and "Yes" or "No"))
+      ImGui.Text("Request in flight: " .. (metrics.in_flight and "Yes" or "No"))
+      ImGui.Text("Polls / unchanged: " .. tostring(metrics.poll_count) .. " / " .. tostring(metrics.unchanged_count))
+      ImGui.Text("Parse failures: " .. tostring(metrics.parse_failures))
+      ImGui.Text("Revision: " .. tostring(metrics.current_revision))
+      ImGui.Text("Backoff: " .. tostring(metrics.current_backoff_ms) .. " ms")
+      ImGui.Text("Draw count: " .. tostring(self.presence_overlay.draw_count))
+      ImGui.Text("Input passthrough flag: " .. (self.presence_overlay:input_passthrough_ready() and "Available" or "Unavailable"))
+      if metrics.last_error ~= nil then ImGui.Text("Presence error: " .. metrics.last_error) end
+      self.presence_overlay:draw_debug_controls()
+    end
   end
   ImGui.End()
 end
@@ -98,11 +126,21 @@ registerForEvent("onInit", function()
     app.diagnostics:log("invalid_config", "mod disabled: " .. config_error, 0, true)
     return
   end
-  app.state_reader = StateReader.new(app.diagnostics)
+  app.state_reader = StateReader.new(app.diagnostics, Config)
   app.state_builder = StateBuilder.new(Config.bridge_version)
   app.session_manager = SessionManager.new(Config.world_disconnect_reset_ms, app.diagnostics)
   app.capability_detector = CapabilityDetector.new(app.diagnostics)
   app.transport = TelemetryClient.new(Config, app.diagnostics)
+  app.presence_settings = PresenceConfig.read()
+  local presence_valid, presence_error = PresenceConfig.validate(app.presence_settings, Config.backend_url)
+  if not presence_valid then
+    app.diagnostics:log("presence_config", presence_error, 0, true)
+    app.presence_settings.enabled = false
+  end
+  app.presence_client = PresenceClient.new(app.presence_settings, Config.backend_url, app.diagnostics)
+  app.presence_client:set_config_module(PresenceConfig)
+  app.presence_client:start(0)
+  app.presence_overlay = PresenceOverlay.new(app.presence_settings, PresenceConfig, app.diagnostics)
   app.transport:set_hello_payload(app:_hello_payload())
   app.transport:start(0)
   app.initialized = true
@@ -119,6 +157,7 @@ registerForEvent("onUpdate", function(delta_time)
     app:_sample(Config.telemetry_interval_ms)
   end
   app.transport:update(app.elapsed_ms, app:_heartbeat_payload())
+  app.presence_client:update(app.elapsed_ms, app.session_manager.session_id)
 end)
 
 local overlay_open = false
@@ -132,13 +171,21 @@ registerForEvent("onOverlayClose", function()
 end)
 
 registerForEvent("onDraw", function()
-  if app.initialized and overlay_open then
-    app:_draw_overlay()
+  if app.initialized then
+    app.presence_overlay:draw(
+      app.elapsed_ms,
+      app.presence_client.snapshot,
+      app.presence_client.snapshot_received_at,
+      app.presence_client.snapshot_expires_at,
+      app.presence_client.connected
+    )
+    if overlay_open then app:_draw_overlay() end
   end
 end)
 
 registerForEvent("onShutdown", function()
   if app.transport then app.transport:shutdown() end
+  if app.presence_client then app.presence_client:shutdown() end
   app.last_state = nil
   app.state_reader = nil
   app.initialized = false
@@ -146,6 +193,14 @@ end)
 
 if registerHotkey ~= nil then
   registerHotkey("siena_observer_reset_session", "Siena Observer: reset session", function() app:ResetSession() end)
+  registerHotkey("siena_presence_toggle", "Toggle Siena Presence", function()
+    if not app.initialized or app.presence_settings == nil then return end
+    app.presence_settings.enabled = not app.presence_settings.enabled
+    app.presence_client:set_enabled(app.presence_settings.enabled, app.elapsed_ms)
+    PresenceConfig.save(app.presence_settings)
+    app.transport:set_hello_payload(app:_hello_payload())
+    app.transport:refresh_hello()
+  end)
 end
 
 return app

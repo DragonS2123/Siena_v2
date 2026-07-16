@@ -7,7 +7,7 @@ from typing import Callable
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import bridge, commands, events, health, reactions, scenes, telemetry, websocket
+from app.api import bridge, commands, events, health, presence, reactions, scenes, telemetry, voice, websocket
 from app.config import Settings, get_settings
 from app.services.decision_scheduler import DecisionScheduler
 from app.services.bridge_registry import BridgeRegistry
@@ -22,6 +22,10 @@ from app.services.siena_core_reaction_provider import SienaCoreReactionProvider
 from app.services.siena_core_client import DisabledSienaCoreClient
 from app.services.state_diff import diff_states
 from app.services.state_store import StateStore
+from app.services.siena_tts_client import SienaTtsClient
+from app.services.voice_behavior_policy import VoiceBehaviorPolicy
+from app.services.voice_dispatch import VoiceDispatchService
+from app.services.in_game_presence import InGamePresencePolicy, InGamePresenceProjection
 
 logger = logging.getLogger("siena_observer")
 
@@ -38,6 +42,9 @@ class Services:
     reaction_dispatch: ReactionDispatchService
     scene_builder: SceneContextBuilder
     behavior_policy: CompanionBehaviorPolicy
+    voice_policy: VoiceBehaviorPolicy
+    voice_dispatch: VoiceDispatchService
+    presence: InGamePresenceProjection
     core_client: DisabledSienaCoreClient
     bridge_registry: BridgeRegistry
     diff: Callable = diff_states
@@ -57,8 +64,10 @@ class Services:
                 await self.reaction_dispatch.observe_event(event)
         else:
             reaction = await self.reaction_dispatch.handle_event(event)
+        await self.voice_dispatch.observe_event(event)
         if reaction:
             await self.bus.publish("siena_reaction", reaction)
+            await self.voice_dispatch.handle_reaction(reaction)
         if self.settings.scene_enabled and scene_update.significant and scene_update.scene:
             await self.bus.publish("scene_context_updated", scene_update.scene)
         command = await self.scheduler.consider(event)
@@ -84,6 +93,8 @@ class Services:
             "planner": (await self.reaction_planner.status()).model_dump(mode="json"),
             "reaction_provider": (await self.reaction_dispatch.status()).model_dump(mode="json"),
             "scene": scene.model_dump(mode="json") if scene else None,
+            "voice": (await self.voice_dispatch.status()).model_dump(mode="json"),
+            "presence": self.presence.status().model_dump(mode="json"),
             "active_source": bridge_status.active_source,
             "bridge": bridge_status.model_dump(mode="json"),
         }
@@ -139,6 +150,61 @@ def create_services(settings: Settings | None = None) -> Services:
         scene_builder=scene_builder,
         scene_stale_grace_seconds=config.scene_reaction_stale_grace_seconds,
     )
+    voice_policy = VoiceBehaviorPolicy(
+        enabled=config.voice_enabled,
+        muted=config.voice_muted,
+        min_interval_seconds=config.voice_min_interval_seconds,
+        same_text_cooldown_seconds=config.voice_same_text_cooldown_seconds,
+        scene_max_clips=config.voice_scene_max_clips,
+        critical_bypass=config.voice_critical_bypass,
+        max_text_chars=config.voice_max_text_chars,
+        max_event_age_seconds=config.voice_max_event_age_seconds,
+        audio_ttl_seconds=config.voice_audio_ttl_seconds,
+        language=config.voice_language,
+        speaker=config.voice_speaker,
+        require_tts_ready=config.voice_require_tts_ready,
+    )
+    tts_client = SienaTtsClient(
+        base_url=config.tts_base_url,
+        api_token=config.tts_api_token,
+        connect_timeout_seconds=config.tts_connect_timeout_seconds,
+        request_timeout_seconds=config.tts_request_timeout_seconds,
+        max_retries=config.tts_max_retries,
+        max_audio_bytes=config.tts_max_audio_bytes,
+        failure_threshold=config.tts_circuit_failure_threshold,
+        circuit_reset_seconds=config.tts_circuit_reset_seconds,
+    )
+    voice_dispatch = VoiceDispatchService(
+        enabled=config.voice_enabled,
+        muted=config.voice_muted,
+        policy=voice_policy,
+        bus=bus,
+        tts_client=tts_client,
+        scene_builder=scene_builder,
+        queue_capacity=config.voice_queue_size,
+        clip_history_limit=config.voice_clip_history_limit,
+        audio_ttl_seconds=config.voice_audio_ttl_seconds,
+        max_event_age_seconds=config.voice_max_event_age_seconds,
+        language=config.voice_language,
+        speaker=config.voice_speaker,
+        interrupt_mode=config.voice_interrupt_mode,
+        post_play_gap_ms=config.voice_post_play_gap_ms,
+    )
+    presence_policy = InGamePresencePolicy(
+        generating_delay_ms=config.presence_generating_delay_ms,
+        normal_duration_ms=config.presence_normal_duration_ms,
+        high_duration_ms=config.presence_high_duration_ms,
+        critical_duration_ms=config.presence_critical_duration_ms,
+        fallback_duration_ms=config.presence_fallback_duration_ms,
+        max_text_chars=config.presence_max_text_chars,
+    )
+    presence_projection = InGamePresenceProjection(
+        enabled=config.presence_enabled,
+        policy=presence_policy,
+        poll_interval_ms=config.presence_poll_interval_ms,
+    )
+    bus.subscribe(presence_projection.observe)
+    dispatch.on_reaction_published = voice_dispatch.handle_reaction
     return Services(
         settings=config,
         store=StateStore(),
@@ -161,6 +227,9 @@ def create_services(settings: Settings | None = None) -> Services:
         reaction_dispatch=dispatch,
         scene_builder=scene_builder,
         behavior_policy=behavior_policy,
+        voice_policy=voice_policy,
+        voice_dispatch=voice_dispatch,
+        presence=presence_projection,
         core_client=DisabledSienaCoreClient(),
         bridge_registry=BridgeRegistry(config.protocol_version, config.bridge_timeout_seconds, config.bridge_registry_size, config.telemetry_source),
     )
@@ -171,6 +240,8 @@ async def maintain_pipeline(services: Services) -> None:
         await asyncio.sleep(min(services.settings.damage_window_seconds / 2, 0.25))
         for event in [*services.filter.flush_due(), *services.synthesizer.expire_sessions()]:
             await services.publish_event(event)
+        if services.presence.tick():
+            await services.bus.publish("in_game_presence_status", services.presence.status())
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -179,6 +250,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await services.reaction_dispatch.start()
+        await services.voice_dispatch.start()
         task = asyncio.create_task(maintain_pipeline(services), name="event-pipeline-maintenance")
         logger.info("observer backend started on %s:%s", services.settings.host, services.settings.port)
         try:
@@ -188,8 +260,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             with suppress(asyncio.CancelledError):
                 await task
             await services.reaction_dispatch.stop()
+            await services.voice_dispatch.stop()
 
-    app = FastAPI(title="Siena Cyberpunk Companion", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="Siena Cyberpunk Companion", version="0.8.1", lifespan=lifespan)
     app.state.services = services
     app.add_middleware(
         CORSMiddleware,
@@ -204,6 +277,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(events.router)
     app.include_router(reactions.router)
     app.include_router(scenes.router)
+    app.include_router(voice.router)
+    app.include_router(presence.router)
     app.include_router(commands.router)
     app.include_router(websocket.router)
     return app

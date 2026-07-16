@@ -14,7 +14,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import psutil
 import requests
@@ -22,6 +22,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 import config
 from core import model_router
@@ -155,6 +156,18 @@ class ExternalGameReactionResponse(BaseModel):
     model: str
     request_id: str
     metadata: ExternalGameReactionMetadata
+
+
+class ExternalSpeechRequest(BaseModel):
+    """Strict stateless speech contract for trusted local integrations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=config.EXTERNAL_SPEECH_MAX_TEXT_CHARS)
+    speaker: str | None = Field(default=None, max_length=128)
+    language: Literal["ru", "en"] = "ru"
+    audio_format: Literal["wav"] = "wav"
 
 
 class ClientTraceEventRequest(BaseModel):
@@ -3971,6 +3984,85 @@ async def voice_synthesize(payload: VoiceSynthesizeRequest) -> dict[str, Any]:
         # provider (primary or fallback) actually produced the audio.
         "provider": result.get("provider", config.TTS_PROVIDER),
     }
+
+
+@app.post("/api/external/speech")
+async def external_speech(payload: ExternalSpeechRequest) -> FileResponse:
+    """Feature-gated local binary WAV synthesis for stateless integrations.
+
+    This endpoint receives final text and never invokes chat, tools, memory,
+    specialists, model routing, or conversation persistence. Enabling the
+    endpoint is the explicit operator action that permits a real synthesis;
+    merely starting Siena does not synthesize or warm TTS through this path.
+    """
+    if not config.EXTERNAL_SPEECH_ENABLED:
+        raise HTTPException(status_code=404, detail="external speech endpoint is disabled")
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    base_logger.event(
+        "external_speech_requested",
+        request_id=payload.request_id,
+        text_length=len(text),
+        speaker_configured=bool(payload.speaker),
+        language=payload.language,
+        console_message=f"[VOICE][EXTERNAL] synthesis requested ({len(text)} chars)",
+    )
+    start = time.monotonic()
+    try:
+        result = await asyncio.to_thread(voice_service.synthesize, text, payload.speaker)
+    except TTSUnavailableError as exc:
+        base_logger.error(
+            "external_speech_failed",
+            request_id=payload.request_id,
+            error_category="tts_unavailable",
+            error=str(exc),
+            console_message=f"[VOICE][EXTERNAL] synthesis unavailable: {exc}",
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    path = Path(result["audio_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=502, detail="TTS provider returned no audio file")
+    try:
+        with wave.open(str(path), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_rate = wav.getframerate()
+            frames = wav.getnframes()
+            duration_ms = round(frames / sample_rate * 1000) if sample_rate else 0
+    except (wave.Error, OSError) as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=502, detail="TTS provider returned malformed WAV") from exc
+
+    provider = str(result.get("provider", config.TTS_PROVIDER))
+    speaker = str(result.get("voice", payload.speaker or getattr(voice_service.tts, "voice", "")))
+    latency_ms = round((time.monotonic() - start) * 1000)
+    base_logger.event(
+        "external_speech_completed",
+        request_id=payload.request_id,
+        provider=provider,
+        speaker=speaker,
+        byte_length=path.stat().st_size,
+        duration_ms=duration_ms,
+        latency_ms=latency_ms,
+        console_message=f"[VOICE][EXTERNAL] WAV ready in {latency_ms}ms",
+    )
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        filename=f"{payload.request_id}.wav",
+        headers={
+            "X-Siena-TTS-Provider": provider,
+            "X-Siena-TTS-Speaker": speaker,
+            "X-Siena-TTS-Language": payload.language,
+            "X-Siena-TTS-Sample-Rate": str(sample_rate),
+            "X-Siena-TTS-Channels": str(channels),
+            "X-Siena-TTS-Duration-Ms": str(duration_ms),
+            "X-Siena-TTS-Latency-Ms": str(latency_ms),
+        },
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
 
 
 @app.get("/api/voice/audio/{filename}")

@@ -1,14 +1,19 @@
 local CapabilityDetector = {}
 CapabilityDetector.__index = CapabilityDetector
 
-local names = { "player_health", "player_position", "combat_state", "vehicle_state", "pause_state", "district" }
+local names = {
+  "player_health", "player_position", "combat_state", "vehicle_state", "pause_state", "district",
+  "deep_player", "deep_stats", "deep_stat_pools", "deep_weapon", "deep_status_effects"
+}
 
 function CapabilityDetector.new(diagnostics)
   return setmetatable({
     diagnostics = diagnostics,
     capabilities = {
       player_health = false, player_position = false, combat_state = false,
-      vehicle_state = false, pause_state = false, district = false
+      vehicle_state = false, pause_state = false, district = false,
+      deep_player = false, deep_stats = false, deep_stat_pools = false,
+      deep_weapon = false, deep_status_effects = false
     },
     announced = {}
   }, CapabilityDetector)

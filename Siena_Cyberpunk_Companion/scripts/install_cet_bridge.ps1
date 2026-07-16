@@ -23,17 +23,26 @@ if (-not (Test-Path -LiteralPath (Join-Path $Source 'init.lua') -PathType Leaf))
 $ExpectedTarget = [IO.Path]::GetFullPath((Join-Path $ModsRoot 'siena_cyberpunk_observer')).TrimEnd('\')
 if ([IO.Path]::GetFullPath($Target).TrimEnd('\') -ne $ExpectedTarget) { throw 'Refusing unsafe installation target.' }
 
+$PreservedSettings = $null
 if (Test-Path -LiteralPath $Target) {
     $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $Backup = "$Target.backup.$Stamp"
     if (-not ([IO.Path]::GetFullPath($Backup).StartsWith([IO.Path]::GetFullPath($ModsRoot), [StringComparison]::OrdinalIgnoreCase))) { throw 'Refusing unsafe backup target.' }
     Move-Item -LiteralPath $Target -Destination $Backup
     Write-Host "Previous Siena bridge backed up to: $Backup"
+    $PreviousSettings = Join-Path $Backup 'presence_settings.json'
+    if (Test-Path -LiteralPath $PreviousSettings -PathType Leaf) { $PreservedSettings = $PreviousSettings }
 }
 
 New-Item -ItemType Directory -Path $Target -Force | Out-Null
 Copy-Item -Path (Join-Path $Source '*') -Destination $Target -Recurse -Force
+if ($PreservedSettings) {
+    Copy-Item -LiteralPath $PreservedSettings -Destination (Join-Path $Target 'presence_settings.json') -Force
+    Write-Host 'Preserved user presence_settings.json from the backup.'
+}
 if (-not (Test-Path -LiteralPath (Join-Path $Target 'init.lua'))) { throw 'Installation copy verification failed.' }
 Write-Host "Siena CET Bridge installed to: $Target"
+Write-Host 'Installed code files:'
+Get-ChildItem -LiteralPath $Source -File | Sort-Object Name | ForEach-Object { Write-Host "  $($_.Name)" }
 Write-Host 'Start Cyberpunk 2077 manually with -no-tls for http://127.0.0.1 transport.'
 Write-Host 'No executable, launcher option, or third-party mod was modified.'

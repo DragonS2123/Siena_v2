@@ -28,7 +28,8 @@ function StateBuilder:build(raw, session_id, sequence)
       present = false, health = 0, max_health = 1, distance_to_player = 0,
       current_intent = "follow", moving = false
     },
-    environment = { district = "Unavailable", visible_hostiles = 0, highest_threat_id = nil }
+    environment = { district = "Unavailable", visible_hostiles = 0, highest_threat_id = nil },
+    deep_game_state = raw.deep_game_state
   }
 end
 

@@ -15,6 +15,16 @@ class BridgeCapabilities(BridgeModel):
     vehicle_state: bool = False
     pause_state: bool = False
     district: bool = False
+    deep_player: bool = False
+    deep_stats: bool = False
+    deep_stat_pools: bool = False
+    deep_weapon: bool = False
+    deep_status_effects: bool = False
+    presence_overlay_supported: bool | None = None
+    presence_overlay_enabled: bool | None = None
+    presence_overlay_version: str | None = Field(default=None, max_length=32)
+    presence_font_cyrillic_ready: bool | None = None
+    presence_poll_interval_ms: int | None = Field(default=None, ge=100, le=60_000)
 
 
 class BridgeHello(BridgeModel):

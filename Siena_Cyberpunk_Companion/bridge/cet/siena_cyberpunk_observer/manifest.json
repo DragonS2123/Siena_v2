@@ -1,6 +1,6 @@
 {
   "name": "Siena Cyberpunk Observer",
-  "version": "0.2.0",
+  "version": "0.8.1",
   "description": "Read-only localhost telemetry bridge for Siena Cyberpunk Observer",
   "author": "Siena",
   "read_only": true,

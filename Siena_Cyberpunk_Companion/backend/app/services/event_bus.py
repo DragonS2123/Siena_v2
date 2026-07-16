@@ -1,5 +1,6 @@
 import asyncio
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from app.models.game_event import GameEvent
@@ -13,6 +14,10 @@ class EventBus:
         self._clients: set[asyncio.Queue[dict[str, Any]]] = set()
         self._client_queue_size = client_queue_size
         self._lock = asyncio.Lock()
+        self._observers: list[Callable[[str, Any], list[tuple[str, Any]]]] = []
+
+    def subscribe(self, observer: Callable[[str, Any], list[tuple[str, Any]]]) -> None:
+        self._observers.append(observer)
 
     async def connect(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._client_queue_size)
@@ -29,19 +34,32 @@ class EventBus:
             self._history.append(data)
         if message_type == "siena_reaction" and isinstance(data, SienaReaction):
             self._reactions.append(data)
-        serialized = data.model_dump(mode="json") if hasattr(data, "model_dump") else data
-        payload = {"type": message_type, "data": serialized}
-        if message_type in {"game_event", "siena_reaction", "reaction_provider_status", "reaction_generation_status", "scene_context_updated"}:
-            payload["payload"] = serialized
+        messages = [(message_type, data)]
+        if message_type != "in_game_presence_status":
+            for observer in tuple(self._observers):
+                messages.extend(observer(message_type, data))
+        payloads = []
+        compatible = {
+            "game_event", "siena_reaction", "reaction_provider_status",
+            "reaction_generation_status", "scene_context_updated",
+            "voice_generation_status", "voice_clip_ready", "in_game_presence_status",
+        }
+        for current_type, current_data in messages:
+            serialized = current_data.model_dump(mode="json") if hasattr(current_data, "model_dump") else current_data
+            payload = {"type": current_type, "data": serialized}
+            if current_type in compatible:
+                payload["payload"] = serialized
+            payloads.append(payload)
         async with self._lock:
             clients = tuple(self._clients)
-        for queue in clients:
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            queue.put_nowait(payload)
+        for payload in payloads:
+            for queue in clients:
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                queue.put_nowait(payload)
 
     def events(self, limit: int = 200, event_type: str | None = None, severity: str | None = None, session_id: str | None = None) -> list[GameEvent]:
         items = reversed(self._history)

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Awaitable, Callable
 from uuid import uuid4
 
 from app.domain.priorities import PRIORITY_RANK, EventPriority
@@ -155,6 +155,7 @@ class ReactionDispatchService:
         self.stale_suppressed_count = 0
         self._active_provider = "configuration_error" if configured_provider == "siena_core" and core_provider.configuration_error else configured_provider
         self._last_status_fingerprint: tuple | None = None
+        self.on_reaction_published: Callable[[SienaReaction], Awaitable[None]] | None = None
 
     async def start(self) -> None:
         if self.configured_provider == "siena_core" and not self._worker:
@@ -295,6 +296,8 @@ class ReactionDispatchService:
                         reaction = self._fallback(request, exc)
                 if reaction:
                     await self.bus.publish("siena_reaction", reaction)
+                    if self.on_reaction_published:
+                        await self.on_reaction_published(reaction)
                     self._remember_reaction(reaction)
                     if self.scene_builder and reaction.scene_id:
                         self.scene_builder.record_reaction(reaction.scene_id)

@@ -30,6 +30,8 @@ OLLAMA_THINK = False  # выключено для скорости agent loop; �
 # operator explicitly enables the integration before backend startup.
 EXTERNAL_GAME_REACTIONS_ENABLED = os.getenv("SIENA_EXTERNAL_GAME_REACTIONS_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 EXTERNAL_GAME_REACTION_MAX_PROMPT_CHARS = 8000
+EXTERNAL_SPEECH_ENABLED = os.getenv("SIENA_EXTERNAL_SPEECH_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+EXTERNAL_SPEECH_MAX_TEXT_CHARS = int(os.getenv("SIENA_EXTERNAL_SPEECH_MAX_TEXT_CHARS", "500"))
 
 # --- Управление контекстом (см. DIAGNOSIS_CONTEXT_OVERFLOW.md) ---
 # Технические параметры транспорта — Runtime не решает, что "важно" сохранить

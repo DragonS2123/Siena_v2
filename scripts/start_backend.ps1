@@ -21,7 +21,8 @@
 
 param(
     [switch]$Reload,
-    [switch]$EnableExternalGameReactions
+    [switch]$EnableExternalGameReactions,
+    [switch]$EnableExternalSpeech
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +44,11 @@ Write-Host "Repo root: $repoRoot"
 if ($EnableExternalGameReactions) {
     $env:SIENA_EXTERNAL_GAME_REACTIONS_ENABLED = "true"
     Write-Host "External stateless game reactions: ENABLED"
+}
+
+if ($EnableExternalSpeech) {
+    $env:SIENA_EXTERNAL_SPEECH_ENABLED = "true"
+    Write-Host "External stateless speech: ENABLED"
 }
 
 $uvicornArgs = @("-m", "uvicorn", "api.server:app", "--host", "127.0.0.1", "--port", "8000")

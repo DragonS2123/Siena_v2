@@ -59,3 +59,21 @@ def test_external_game_reaction_rejects_enabled_side_effects(monkeypatch):
     with TestClient(server.app) as client:
         response = client.post("/api/external/game-reaction", json=payload(tools_enabled=True))
     assert response.status_code in {400, 422}
+
+
+def test_external_game_reaction_preserves_exact_russian_unicode(monkeypatch):
+    exact = "Здоровье критическое. Найди укрытие."
+    monkeypatch.setattr(config, "EXTERNAL_GAME_REACTIONS_ENABLED", True)
+    monkeypatch.setattr(
+        server.ollama_client,
+        "chat",
+        lambda messages, tools=None, model=None: {
+            "model": "qwen3.5:9b",
+            "message": {"content": exact},
+        },
+    )
+    with TestClient(server.app) as client:
+        response = client.post("/api/external/game-reaction", json=payload())
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["text"] == exact

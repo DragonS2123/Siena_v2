@@ -10,6 +10,9 @@ $Checks = [ordered]@{
     'CET root' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks'
     'CET mod init.lua' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks\mods\siena_cyberpunk_observer\init.lua'
     'Siena manifest' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks\mods\siena_cyberpunk_observer\manifest.json'
+    'Presence client' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks\mods\siena_cyberpunk_observer\presence_client.lua'
+    'Presence renderer' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks\mods\siena_cyberpunk_observer\presence_overlay.lua'
+    'Presence config' = Join-Path $GameRoot 'bin\x64\plugins\cyber_engine_tweaks\mods\siena_cyberpunk_observer\presence_config.lua'
     'RED4ext' = Join-Path $GameRoot 'red4ext\RED4ext.dll'
     'redscript compiler' = Join-Path $GameRoot 'engine\tools\scc.exe'
     'RedHttpClient plugin' = Join-Path $GameRoot 'red4ext\plugins\RedHttpClient'
@@ -33,6 +36,24 @@ if (Test-Path -LiteralPath $Installed) {
             Write-Host "CONTENT MISMATCH         $($File.Name)"
             $Failed = $true
         }
+    }
+    $InitText = Get-Content -LiteralPath (Join-Path $Installed 'init.lua') -Raw
+    $ClientText = Get-Content -LiteralPath (Join-Path $Installed 'presence_client.lua') -Raw -ErrorAction SilentlyContinue
+    $OverlayText = Get-Content -LiteralPath (Join-Path $Installed 'presence_overlay.lua') -Raw -ErrorAction SilentlyContinue
+    $ConfigText = Get-Content -LiteralPath (Join-Path $Installed 'presence_config.lua') -Raw -ErrorAction SilentlyContinue
+    $StaticChecks = [ordered]@{
+        'No debug.getinfo' = $InitText -notmatch 'debug\.getinfo'
+        'Presence polling endpoint' = ($ConfigText -match '/api/v1/in-game-presence/current') -and ($ClientText -match 'config\.endpoint_path')
+        'Presence uses async GET' = $ClientText -match 'AsyncHttpClient\.Get'
+        'No HTTP in onDraw module' = $OverlayText -notmatch 'AsyncHttpClient|HttpClient\.'
+        'Presence renderer exists' = $OverlayText -match '##SienaInGamePresence'
+        'Presence defaults disabled' = $ConfigText -match 'enabled\s*=\s*false'
+        'Remote URL disabled' = $ConfigText -match 'allow_remote_presence_url\s*=\s*false'
+        'Diagnostic overlay remains gated' = $InitText -match 'if overlay_open then app:_draw_overlay\(\) end'
+    }
+    foreach ($StaticCheck in $StaticChecks.GetEnumerator()) {
+        Write-Host ("{0,-31} {1}" -f $StaticCheck.Key, $(if($StaticCheck.Value){'OK'}else{'FAILED'}))
+        if (-not $StaticCheck.Value) { $Failed = $true }
     }
 }
 if ($Failed) { throw 'CET bridge verification failed. No files were changed.' }
