@@ -13,7 +13,8 @@ const forbidden = [
   [/Game\.GetPreventionSystem\s*\(/, 'runtime-proven missing Game.GetPreventionSystem call'],
   [/Game\.GetTargetingSystem\s*\(|GetComponentClosestToCrosshair\s*\(/, 'deferred target access'],
   [/GetItemList\s*\(|Game\.GetJournalManager\s*\(|Game\.GetQuestsSystem\s*\(/, 'deferred inventory or quest access'],
-  [/PlayerDevelopmentSystem|CyberdeckProgram/, 'deferred perk, cyberware, or quickhack access'],
+  [/PlayerDevelopmentSystem/, 'deferred perk access'],
+  [/GetSlotsForCyberdeckFromItemData|GetPlayerQuickHackInCyberDeck/, 'runtime-proven unavailable quickhack global'],
 ]
 
 for (const name of files) {
@@ -108,6 +109,20 @@ if (!/deep_status_effects_max_items\s*\+\s*1/.test(stateReader) || !/truncated\s
 }
 if (!/deep_static_stats_interval_ms/.test(stateReader) || !/deep_weapon_interval_ms/.test(stateReader) || !/deep_status_effects_interval_ms/.test(stateReader)) {
   throw new Error('state_reader.lua: domain polling-rate caches are missing')
+}
+for (const evidence of [
+  'gamedataEquipmentArea.SystemReplacementCW', 'GetItemsInArea', 'GetItemData(player, item_id)',
+  'HasTag(CName.new("Cyberdeck"))', 'GetItemParts()', 'InnerItemData.GetSlotID(part)',
+  'InnerItemData.GetItemID(part)', 'GetInnerItemDataQuality(part)', 'IsInnerItemDataIconic(part)',
+  'GetUsedSlotsOnItem()', 'GetEmptySlotsOnItem()', 'deep_cyberdeck_interval_ms'
+]) {
+  if (!stateReader.includes(evidence)) throw new Error(`state_reader.lua: missing v0.8.4 evidence-backed access ${evidence}`)
+}
+if (!/seen_decks\[record_id\]/.test(stateReader) || !/slot_id \.\. "\|" \.\. program_record_id/.test(stateReader)) {
+  throw new Error('state_reader.lua: stable cyberdeck/program deduplication is missing')
+}
+if (!/CyberdeckProgram\(\[1-8\]\)\$/.test(stateReader) || !/math\.min\(8, self\.config\.deep_status_effects_max_items\)/.test(stateReader)) {
+  throw new Error('state_reader.lua: cyberdeck program slot allowlist/bound is missing')
 }
 if (!/deep_game_state\s*=\s*raw\.deep_game_state/.test(stateBuilder)) {
   throw new Error('state_builder.lua: additive deep_game_state payload is missing')

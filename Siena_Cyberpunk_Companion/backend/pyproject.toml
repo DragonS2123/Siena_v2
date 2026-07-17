@@ -1,6 +1,6 @@
 [project]
 name = "siena-cyberpunk-observer"
-version = "0.8.2"
+version = "0.8.4"
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]

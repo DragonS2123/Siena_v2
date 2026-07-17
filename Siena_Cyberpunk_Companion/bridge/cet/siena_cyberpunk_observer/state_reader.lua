@@ -16,11 +16,45 @@ local function nullable_number(value)
   return nil
 end
 
+local function stable_tdbid(value, prefix)
+  if value == nil then return nil end
+  local text = tostring(value)
+  local stable = text:match("%-%-%[%[%s*([%w_%.]+)%s*%-%-%]%]")
+  if stable == nil and text:match("^[%w_%.]+$") then stable = text end
+  if stable == nil or (prefix ~= nil and stable:sub(1, #prefix) ~= prefix) then return nil end
+  return stable
+end
+
+local function program_slot(value)
+  local stable = stable_tdbid(value, "AttachmentSlots.CyberdeckProgram")
+  if stable == nil then return nil, nil end
+  local order = tonumber(stable:match("CyberdeckProgram([1-8])$"))
+  if order == nil then return nil, nil end
+  return stable, order
+end
+
+local function quality_name(value)
+  if value == nil then return nil end
+  local text = tostring(value)
+  return text:match("gamedataQuality%s*:%s*([%w_]+)") or text:match("^([%w_]+)$")
+end
+
+local function sorted_programs(programs)
+  table.sort(programs, function(left, right)
+    if left._order == right._order then return left.record_id < right.record_id end
+    return left._order < right._order
+  end)
+  for _, program in ipairs(programs) do program._order = nil end
+  return programs
+end
+
 local function empty_deep_state(max_status_effects)
   return {
     capabilities = {
       player = false, stats = false, stat_pools = false,
-      weapon = false, status_effects = false
+      weapon = false, status_effects = false,
+      cyberdeck_identity = false, cyberdeck_metadata = false,
+      cyberdeck_programs = false, cyberdeck_capacity = false
     },
     player = {
       entity_available = nil, session_available = nil, is_pre_game = nil,
@@ -35,7 +69,8 @@ local function empty_deep_state(max_status_effects)
       current_memory = nil, maximum_memory = nil
     },
     weapon = { drawn = nil, record_id = nil, source = nil },
-    status_effects = { observed_count = nil, truncated = nil, limit = max_status_effects }
+    status_effects = { observed_count = nil, truncated = nil, limit = max_status_effects },
+    cyberdeck = nil
   }
 end
 
@@ -46,11 +81,13 @@ function StateReader.new(diagnostics, config)
     last_static_stats_at = -math.huge,
     last_weapon_at = -math.huge,
     last_status_effects_at = -math.huge,
+    last_cyberdeck_at = -math.huge,
     static_stats_cache = nil,
     static_stats_available = false,
     weapon_cache = nil,
     weapon_available = false,
-    status_effects_cache = nil
+    status_effects_cache = nil,
+    cyberdeck_cache = nil
   }, StateReader)
 end
 
@@ -58,11 +95,184 @@ function StateReader:_clear_session_cache()
   self.last_static_stats_at = -math.huge
   self.last_weapon_at = -math.huge
   self.last_status_effects_at = -math.huge
+  self.last_cyberdeck_at = -math.huge
   self.static_stats_cache = nil
   self.static_stats_available = false
   self.weapon_cache = nil
   self.weapon_available = false
   self.status_effects_cache = nil
+  self.cyberdeck_cache = nil
+end
+
+function StateReader:_read_cyberdeck(player, now_ms)
+  if self.cyberdeck_cache ~= nil and now_ms - self.last_cyberdeck_at < self.config.deep_cyberdeck_interval_ms then
+    return self.cyberdeck_cache.value, self.cyberdeck_cache.capabilities
+  end
+  self.last_cyberdeck_at = now_ms
+  local caps = { identity = false, metadata = false, programs = false, capacity = false }
+  local candidates = {}
+  local data_ok, equipment_data = protected(function() return EquipmentSystem.GetData(player) end)
+  if data_ok and equipment_data ~= nil then
+    local active_ok, active = protected(function()
+      return equipment_data:GetActiveItem(gamedataEquipmentArea.SystemReplacementCW)
+    end)
+    if active_ok then
+      caps.identity = true
+      if active ~= nil then candidates[#candidates + 1] = active end
+    end
+  end
+
+  local system_ok, equipment_system = protected(function()
+    return Game.GetScriptableSystemsContainer():Get("EquipmentSystem")
+  end)
+  if system_ok and equipment_system ~= nil then
+    local area_ok, area_items = protected(function()
+      return equipment_system.GetItemsInArea(player, gamedataEquipmentArea.SystemReplacementCW)
+    end)
+    if area_ok and type(area_items) == "table" then
+      caps.identity = true
+      for index = 1, self.config.deep_status_effects_max_items + 1 do
+        if area_items[index] == nil or index > self.config.deep_status_effects_max_items then break end
+        candidates[#candidates + 1] = area_items[index]
+      end
+    end
+  end
+
+  local transaction_ok, transaction = protected(function() return Game.GetTransactionSystem() end)
+  local seen_decks = {}
+  local deck = nil
+  if transaction_ok and transaction ~= nil then
+    local candidate_limit = math.min(#candidates, self.config.deep_status_effects_max_items)
+    for index = 1, candidate_limit do
+      local item_id = candidates[index]
+      local record_ok, record_value = protected(function() return item_id.id end)
+      local record_id = record_ok and stable_tdbid(record_value, "Items.") or nil
+      if record_id ~= nil and not seen_decks[record_id] then
+        seen_decks[record_id] = true
+        local item_data_ok, item_data = protected(function() return transaction:GetItemData(player, item_id) end)
+        local cyberdeck_ok, is_cyberdeck = false, false
+        if item_data_ok and item_data ~= nil then
+          cyberdeck_ok, is_cyberdeck = protected(function() return item_data:HasTag(CName.new("Cyberdeck")) end)
+        end
+        if cyberdeck_ok and is_cyberdeck == true and deck == nil then
+          deck = { item_id = item_id, item_data = item_data, record_value = record_value, record_id = record_id }
+        end
+      end
+    end
+  end
+
+  if deck == nil then
+    self.cyberdeck_cache = { value = nil, capabilities = caps }
+    return nil, caps
+  end
+
+  local type_ok = protected(function() return deck.item_data:GetItemType() end)
+  local quality_ok, quality_value = protected(function() return RPGManager.GetItemDataQuality(deck.item_data) end)
+  local iconic_ok, iconic_value = protected(function() return RPGManager.IsItemDataIconic(deck.item_data) end)
+  local record_ok, record = protected(function() return TweakDBInterface.GetItemRecord(deck.record_value) end)
+  local tags_ok, record_tags = false, nil
+  if record_ok and record ~= nil then tags_ok, record_tags = protected(function() return record:Tags() end) end
+  caps.metadata = type_ok and quality_ok and iconic_ok and tags_ok and type(record_tags) == "table"
+
+  local tags = {}
+  for _, tag_name in ipairs({ "Cyberdeck", "Cyberware", "Iconic_OS_CW" }) do
+    local tag_ok, present = protected(function() return deck.item_data:HasTag(CName.new(tag_name)) end)
+    if tag_ok and present == true then tags[#tags + 1] = tag_name end
+  end
+
+  local programs = {}
+  local seen_programs = {}
+  local parts_truncated = false
+  local parts_ok, parts = protected(function() return deck.item_data:GetItemParts() end)
+  if parts_ok and type(parts) == "table" then
+    caps.programs = true
+    local scan_limit = self.config.deep_status_effects_max_items
+    for index = 1, scan_limit + 1 do
+      local part = parts[index]
+      if part == nil then break end
+      if index > scan_limit then parts_truncated = true; break end
+      local slot_ok, slot_value = protected(function() return InnerItemData.GetSlotID(part) end)
+      local slot_id, slot_order = nil, nil
+      if slot_ok then slot_id, slot_order = program_slot(slot_value) end
+      if slot_id ~= nil then
+        local item_ok, program_item_id = protected(function() return InnerItemData.GetItemID(part) end)
+        local program_record_ok, program_record_value = false, nil
+        if item_ok and program_item_id ~= nil then
+          program_record_ok, program_record_value = protected(function() return program_item_id.id end)
+        end
+        local program_record_id = program_record_ok and stable_tdbid(program_record_value, "Items.") or nil
+        local key = program_record_id ~= nil and (slot_id .. "|" .. program_record_id) or nil
+        if key ~= nil and not seen_programs[key] then
+          seen_programs[key] = true
+          local program_quality_ok, program_quality = protected(function() return RPGManager.GetInnerItemDataQuality(part) end)
+          local program_iconic_ok, program_iconic = protected(function() return RPGManager.IsInnerItemDataIconic(part) end)
+          programs[#programs + 1] = {
+            slot_id = slot_id,
+            record_id = program_record_id,
+            quality = program_quality_ok and quality_name(program_quality) or nil,
+            iconic = program_iconic_ok and program_iconic or nil,
+            _order = slot_order
+          }
+        end
+      end
+    end
+  end
+  sorted_programs(programs)
+  local program_limit = math.min(8, self.config.deep_status_effects_max_items)
+  local truncated = parts_truncated or #programs > program_limit
+  while #programs > program_limit do table.remove(programs) end
+
+  local function read_slot_set(method_name)
+    local ok, values = protected(function()
+      if method_name == "used" then return deck.item_data:GetUsedSlotsOnItem() end
+      return deck.item_data:GetEmptySlotsOnItem()
+    end)
+    if not ok or type(values) ~= "table" then return nil end
+    local result = {}
+    for index = 1, self.config.deep_status_effects_max_items + 1 do
+      if values[index] == nil then break end
+      if index > self.config.deep_status_effects_max_items then return nil end
+      local slot_id = program_slot(values[index])
+      if slot_id ~= nil then result[slot_id] = true end
+    end
+    return result
+  end
+
+  local used_slots = read_slot_set("used")
+  local empty_slots = read_slot_set("empty")
+  local used_count, empty_count, total_count = nil, nil, nil
+  if used_slots ~= nil then used_count = 0; for _ in pairs(used_slots) do used_count = used_count + 1 end end
+  if empty_slots ~= nil then empty_count = 0; for _ in pairs(empty_slots) do empty_count = empty_count + 1 end end
+  local consistent = used_slots ~= nil and empty_slots ~= nil
+  local union = {}
+  if consistent then
+    for slot_id in pairs(used_slots) do union[slot_id] = true end
+    for slot_id in pairs(empty_slots) do
+      if used_slots[slot_id] then consistent = false end
+      union[slot_id] = true
+    end
+  end
+  if consistent then
+    total_count = 0
+    for _ in pairs(union) do total_count = total_count + 1 end
+    caps.capacity = true
+  elseif used_slots ~= nil and empty_slots ~= nil then
+    used_count, empty_count = nil, nil
+  end
+
+  local value = {
+    record_id = deck.record_id,
+    quality = quality_ok and quality_name(quality_value) or nil,
+    iconic = iconic_ok and iconic_value or nil,
+    tags = tags,
+    program_capacity = { used = used_count, empty = empty_count, total = total_count },
+    programs = programs,
+    truncated = truncated
+  }
+  deck = nil
+  candidates = nil
+  self.cyberdeck_cache = { value = value, capabilities = caps }
+  return value, caps
 end
 
 function StateReader:_read_static_stats(player, entity_id, now_ms)
@@ -186,7 +396,11 @@ function StateReader:read(now_ms)
       deep_stats = false,
       deep_stat_pools = false,
       deep_weapon = false,
-      deep_status_effects = false
+      deep_status_effects = false,
+      cyberdeck_identity = false,
+      cyberdeck_metadata = false,
+      cyberdeck_programs = false,
+      cyberdeck_capacity = false
     }
   }
 
@@ -257,6 +471,17 @@ function StateReader:read(now_ms)
   if effects ~= nil then deep.status_effects = effects end
   deep.capabilities.status_effects = effects_available
   result.capabilities.deep_status_effects = effects_available
+
+  local cyberdeck, cyberdeck_caps = self:_read_cyberdeck(player, now_ms)
+  deep.cyberdeck = cyberdeck
+  deep.capabilities.cyberdeck_identity = cyberdeck_caps.identity
+  deep.capabilities.cyberdeck_metadata = cyberdeck_caps.metadata
+  deep.capabilities.cyberdeck_programs = cyberdeck_caps.programs
+  deep.capabilities.cyberdeck_capacity = cyberdeck_caps.capacity
+  result.capabilities.cyberdeck_identity = cyberdeck_caps.identity
+  result.capabilities.cyberdeck_metadata = cyberdeck_caps.metadata
+  result.capabilities.cyberdeck_programs = cyberdeck_caps.programs
+  result.capabilities.cyberdeck_capacity = cyberdeck_caps.capacity
 
   local combat_ok, in_combat = protected(function() return player:IsInCombat() end)
   if combat_ok and type(in_combat) == "boolean" then

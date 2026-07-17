@@ -69,6 +69,10 @@ class DeepGameStateCapabilities(StrictModel):
     stat_pools: bool | None = None
     weapon: bool | None = None
     status_effects: bool | None = None
+    cyberdeck_identity: bool | None = None
+    cyberdeck_metadata: bool | None = None
+    cyberdeck_programs: bool | None = None
+    cyberdeck_capacity: bool | None = None
 
 
 class DeepPlayerState(StrictModel):
@@ -121,6 +125,49 @@ class DeepStatusEffectsState(StrictModel):
         return self
 
 
+class DeepCyberdeckProgram(StrictModel):
+    slot_id: str = Field(pattern=r"^AttachmentSlots\.CyberdeckProgram[1-8]$", max_length=64)
+    record_id: str = Field(pattern=r"^Items\.[A-Za-z0-9_.]+$", max_length=256)
+    quality: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_]+$", max_length=64)
+    iconic: bool | None = None
+
+
+class DeepCyberdeckCapacity(StrictModel):
+    used: int | None = Field(default=None, ge=0, le=8)
+    empty: int | None = Field(default=None, ge=0, le=8)
+    total: int | None = Field(default=None, ge=0, le=8)
+
+    @model_validator(mode="after")
+    def counts_are_consistent(self) -> "DeepCyberdeckCapacity":
+        if self.total is not None:
+            if self.used is not None and self.used > self.total:
+                raise ValueError("used cyberdeck slots cannot exceed total")
+            if self.empty is not None and self.empty > self.total:
+                raise ValueError("empty cyberdeck slots cannot exceed total")
+            if self.used is not None and self.empty is not None and self.used + self.empty != self.total:
+                raise ValueError("used plus empty cyberdeck slots must equal total")
+        return self
+
+
+class DeepCyberdeckState(StrictModel):
+    record_id: str | None = Field(default=None, pattern=r"^Items\.[A-Za-z0-9_.]+$", max_length=256)
+    quality: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_]+$", max_length=64)
+    iconic: bool | None = None
+    tags: list[Literal["Cyberdeck", "Cyberware", "Iconic_OS_CW"]] | None = Field(default=None, max_length=3)
+    program_capacity: DeepCyberdeckCapacity | None = None
+    programs: list[DeepCyberdeckProgram] | None = Field(default=None, max_length=8)
+    truncated: bool | None = None
+
+    @model_validator(mode="after")
+    def normalize_stable_collections(self) -> "DeepCyberdeckState":
+        if self.tags is not None:
+            self.tags = list(dict.fromkeys(self.tags))
+        if self.programs is not None:
+            unique = {(program.slot_id, program.record_id): program for program in self.programs}
+            self.programs = sorted(unique.values(), key=lambda program: (int(program.slot_id[-1]), program.record_id))
+        return self
+
+
 class DeepGameState(StrictModel):
     capabilities: DeepGameStateCapabilities | None = None
     player: DeepPlayerState | None = None
@@ -128,6 +175,7 @@ class DeepGameState(StrictModel):
     stat_pools: DeepStatPoolsState | None = None
     weapon: DeepWeaponState | None = None
     status_effects: DeepStatusEffectsState | None = None
+    cyberdeck: DeepCyberdeckState | None = None
 
 
 class GameState(StrictModel):

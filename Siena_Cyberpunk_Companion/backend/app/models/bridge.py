@@ -20,6 +20,10 @@ class BridgeCapabilities(BridgeModel):
     deep_stat_pools: bool = False
     deep_weapon: bool = False
     deep_status_effects: bool = False
+    cyberdeck_identity: bool = False
+    cyberdeck_metadata: bool = False
+    cyberdeck_programs: bool = False
+    cyberdeck_capacity: bool = False
     presence_overlay_supported: bool | None = None
     presence_overlay_enabled: bool | None = None
     presence_overlay_version: str | None = Field(default=None, max_length=32)

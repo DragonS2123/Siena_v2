@@ -101,6 +101,12 @@ class SceneContext(BaseModel):
     level: float | None = None
     street_cred: float | None = None
     armor: float | None = None
+    cyberdeck_record_id: str | None = Field(default=None, pattern=r"^Items\.[A-Za-z0-9_.]+$", max_length=256)
+    cyberdeck_quality: str | None = Field(default=None, max_length=64)
+    cyberdeck_iconic: bool | None = None
+    cyberdeck_program_count: int | None = Field(default=None, ge=0, le=8)
+    cyberdeck_program_capacity: int | None = Field(default=None, ge=0, le=8)
+    installed_quickhack_record_ids: list[str] = Field(default_factory=list, max_length=8)
     player_available: bool | None = None
     session_available: bool | None = None
     is_pre_game: bool | None = None
@@ -125,6 +131,13 @@ class SceneContext(BaseModel):
         if value.tzinfo is None:
             raise ValueError("scene timestamps must include a timezone")
         return value.astimezone(timezone.utc)
+
+    @field_validator("installed_quickhack_record_ids")
+    @classmethod
+    def quickhack_ids_are_stable(cls, values: list[str]) -> list[str]:
+        if any(not value.startswith("Items.") or len(value) > 256 for value in values):
+            raise ValueError("installed quickhack IDs must be stable Items.* record IDs")
+        return values
 
 
 class SceneUpdate(BaseModel):

@@ -262,7 +262,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await services.reaction_dispatch.stop()
             await services.voice_dispatch.stop()
 
-    app = FastAPI(title="Siena Cyberpunk Companion", version="0.8.2", lifespan=lifespan)
+    app = FastAPI(title="Siena Cyberpunk Companion", version="0.8.4", lifespan=lifespan)
     app.state.services = services
     app.add_middleware(
         CORSMiddleware,

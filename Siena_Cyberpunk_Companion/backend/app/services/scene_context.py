@@ -109,6 +109,13 @@ class SceneContextBuilder:
         scene.level = stats.level if stats else None
         scene.street_cred = stats.street_cred if stats else None
         scene.armor = stats.armor if stats else None
+        cyberdeck = deep.cyberdeck
+        scene.cyberdeck_record_id = cyberdeck.record_id if cyberdeck else None
+        scene.cyberdeck_quality = cyberdeck.quality if cyberdeck else None
+        scene.cyberdeck_iconic = cyberdeck.iconic if cyberdeck else None
+        scene.cyberdeck_program_count = len(cyberdeck.programs) if cyberdeck and cyberdeck.programs is not None else None
+        scene.cyberdeck_program_capacity = cyberdeck.program_capacity.total if cyberdeck and cyberdeck.program_capacity else None
+        scene.installed_quickhack_record_ids = [program.record_id for program in cyberdeck.programs[:8]] if cyberdeck and cyberdeck.programs else []
         scene.vehicle_state = state.player.in_vehicle if (capabilities or scene.capabilities).vehicle_state else scene.vehicle_state
         if capabilities is not None:
             scene.capabilities = capabilities
@@ -402,6 +409,9 @@ class SceneContextBuilder:
             round(scene.ram_percent, 1) if scene.ram_percent is not None else None,
             scene.ram_state, scene.active_weapon_record_id, scene.weapon_drawn,
             scene.status_effect_count, scene.level, scene.street_cred, scene.armor,
+            scene.cyberdeck_record_id, scene.cyberdeck_quality, scene.cyberdeck_iconic,
+            scene.cyberdeck_program_count, scene.cyberdeck_program_capacity,
+            tuple(scene.installed_quickhack_record_ids),
             scene.combat_state, scene.vehicle_state,
             round(scene.total_damage, 1), round(scene.total_healing, 1), scene.damage_hits,
         )
@@ -413,6 +423,9 @@ class SceneContextBuilder:
             scene.ram_current, scene.ram_maximum, scene.ram_percent, scene.ram_state,
             scene.active_weapon_record_id, scene.weapon_drawn, scene.status_effect_count,
             scene.level, scene.street_cred, scene.armor,
+            scene.cyberdeck_record_id, scene.cyberdeck_quality, scene.cyberdeck_iconic,
+            scene.cyberdeck_program_count, scene.cyberdeck_program_capacity,
+            tuple(scene.installed_quickhack_record_ids),
             scene.player_available, scene.session_available, scene.is_pre_game, scene.vehicle_state,
         )
 
