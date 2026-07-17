@@ -17,6 +17,8 @@ class GameReactionPromptBuilder:
         player_name: str = "",
         scene: SceneContext | None = None,
         focus: ReactionFocus | None = None,
+        tactical_context: dict | None = None,
+        related_event_types: list[str] | None = None,
     ) -> str:
         elapsed = max(0, round((event.created_at - session_started_at).total_seconds())) if session_started_at else None
         safe_data = {key: value for key, value in event.payload.items() if key in {
@@ -67,6 +69,15 @@ class GameReactionPromptBuilder:
                 "level": scene.level,
                 "street_cred": scene.street_cred,
                 "armor": scene.armor,
+                "build_awareness": {
+                    "observed_tendency": scene.build_style,
+                    "confidence": scene.build_confidence,
+                    "dominant_quickhack_category": scene.quickhack_dominant_category,
+                    "known_programs": scene.quickhack_known_count,
+                    "unknown_programs": scene.quickhack_unknown_count,
+                    "evidence": scene.build_evidence[:4],
+                    "limitations": scene.build_limitations[:6],
+                } if scene.build_style else None,
                 "total_damage": scene.total_damage,
                 "total_healing": scene.total_healing,
                 "damage_hits": scene.damage_hits,
@@ -76,6 +87,9 @@ class GameReactionPromptBuilder:
                 "summary": scene.summary,
             }
             context["reaction_focus"] = str(focus) if focus else None
+        if tactical_context:
+            context["tactical_context"] = tactical_context
+            context["related_events"] = (related_event_types or [])[:8]
         clean_player_name = player_name.strip()
         if clean_player_name:
             context["player_name"] = clean_player_name
@@ -94,6 +108,10 @@ class GameReactionPromptBuilder:
             "Не запускай другие модели и не повторяй дословно недавние реакции или одну и ту же рекомендацию. "
             "Реагируй на развитие текущей сцены, а не перечисляй события и технические поля. "
             "При завершении сцены не повторяй предупреждение, которое уже потеряло актуальность. "
+            "Профиль сборки описывай только как наблюдаемую тенденцию, а не достоверный архетип. "
+            "Не выдумывай атрибуты, перки, эффекты или стоимость программ; используй не более одного уместного факта профиля. "
+            "Основным считай только event; related_events используй как краткий контекст одной ситуации. "
+            "Не утверждай ничего о невидимых врагах, целях или точной причине урона. "
             "Решение говорить уже принято companion policy, поэтому всегда верни одну короткую реплику."
         )
         if clean_player_name:

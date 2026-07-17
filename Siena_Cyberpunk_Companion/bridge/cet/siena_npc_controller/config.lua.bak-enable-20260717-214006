@@ -1,0 +1,42 @@
+local Config = {
+  enabled = false,
+  npc_presence_enabled = false,
+  npc_auto_spawn = false,
+  npc_auto_follow = true,
+  npc_spawn_delay_seconds = 3.0,
+  backend_url = "http://127.0.0.1:8765",
+  poll_interval_ms = 400,
+  request_timeout_ms = 3000,
+  error_backoff_ms = 1000,
+  max_backoff_ms = 10000,
+  spawn_validation_timeout_ms = 3000,
+  entity_record = "Siena.SienaCompanion",
+  appearance = "siena_default",
+  tag = "SienaNpcProduction",
+  spawn_distance = 2.0,
+  vertical_offset = 0.10,
+  follow_distance = 2.5,
+  return_distance = 12.0,
+  rescue_distance = 40.0,
+  rescue_enabled = false,
+  rescue_stuck_seconds = 8.0,
+  rescue_cooldown_seconds = 60.0,
+  suspend_during_combat = true,
+  suspend_in_vehicle = true,
+  in_game_subtitles_enabled = true,
+  voice_embodiment_enabled = true,
+  subtitle_max_chars = 180,
+  movement_type = "Walk"
+}
+
+function Config.validate()
+  if not Config.backend_url:match("^http://127%.0%.0%.1[:/]") and not Config.backend_url:match("^http://localhost[:/]") then return false, "backend_url must be loopback" end
+  if Config.poll_interval_ms < 250 or Config.poll_interval_ms > 500 then return false, "poll interval out of range" end
+  if Config.spawn_distance < 1.5 or Config.spawn_distance > 2.5 then return false, "spawn distance out of range" end
+  if Config.vertical_offset < 0 or Config.vertical_offset > 0.5 then return false, "vertical offset out of range" end
+  if Config.follow_distance < 1.5 or Config.follow_distance > 8 then return false, "follow distance out of range" end
+  if Config.rescue_enabled ~= false then return false, "rescue must remain disabled until live validation" end
+  return true
+end
+
+return Config

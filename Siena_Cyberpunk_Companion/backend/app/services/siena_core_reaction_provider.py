@@ -91,6 +91,8 @@ class SienaCoreReactionProvider:
             self.player_name,
             request.scene_snapshot,
             request.focus,
+            request.tactical_context,
+            request.related_event_types,
         )
         metadata = SienaCoreMetadata(
             game_session_id=event.session_id,

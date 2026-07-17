@@ -134,12 +134,13 @@ class CompanionBehaviorPolicy:
             return self._suppress(event.event_id, "no_meaningful_change")
 
         critical = priority == EventPriority.P0_CRITICAL
+        promoted = semantic == EventType.PLAYER_RAM_EXHAUSTED.value
         reserved = self._reserved.get(scene.scene_id, 0)
-        if reserved >= self.max_reactions and not (critical and self.critical_bypass):
+        if reserved >= self.max_reactions and not ((critical and self.critical_bypass) or promoted):
             logger.info("scene_reaction_budget_exhausted scene_id=%s event_id=%s", scene.scene_id, event.event_id)
             return self._suppress(event.event_id, "scene_budget_exhausted")
         last_at = self._last_at.get(scene.scene_id)
-        if last_at and event.created_at - last_at < self.min_interval and not (critical and self.critical_bypass):
+        if last_at and event.created_at - last_at < self.min_interval and not ((critical and self.critical_bypass) or promoted):
             return self._suppress(event.event_id, "recent_reaction")
 
         self._reserved[scene.scene_id] = reserved + 1

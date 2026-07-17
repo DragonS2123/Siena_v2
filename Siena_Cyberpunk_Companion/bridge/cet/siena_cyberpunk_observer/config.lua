@@ -14,7 +14,7 @@ local Config = {
   enable_diagnostics = true,
   protocol_version = "1.0",
   bridge_id = "siena-cyberpunk-cet",
-  bridge_version = "0.8.4"
+  bridge_version = "0.9.0"
 }
 
 function Config.is_loopback_url(url)

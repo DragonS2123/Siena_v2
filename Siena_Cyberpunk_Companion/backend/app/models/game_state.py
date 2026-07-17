@@ -168,6 +168,58 @@ class DeepCyberdeckState(StrictModel):
         return self
 
 
+BuildCategory = Literal["offensive", "control", "recon", "utility", "unknown"]
+BuildStyle = Literal[
+    "no_cyberdeck", "cyberdeck_unknown", "offensive_netrunner", "control_netrunner",
+    "recon_netrunner", "mixed_netrunner", "unknown",
+]
+
+
+class BuildOperatingSystem(StrictModel):
+    kind: Literal["cyberdeck"]
+    record_id: str | None = Field(default=None, pattern=r"^Items\.[A-Za-z0-9_.]+$", max_length=256)
+    quality: str | None = Field(default=None, max_length=64)
+    iconic: bool | None = None
+
+
+class BuildCategoryCounts(StrictModel):
+    offensive: int = Field(default=0, ge=0, le=8)
+    control: int = Field(default=0, ge=0, le=8)
+    recon: int = Field(default=0, ge=0, le=8)
+    utility: int = Field(default=0, ge=0, le=8)
+    unknown: int = Field(default=0, ge=0, le=8)
+
+
+class BuildQuickhackLoadout(StrictModel):
+    installed: int | None = Field(default=None, ge=0, le=8)
+    capacity: int | None = Field(default=None, ge=0, le=8)
+    fill_percent: float | None = Field(default=None, ge=0, le=100)
+    known_programs: int | None = Field(default=None, ge=0, le=8)
+    unknown_programs: int | None = Field(default=None, ge=0, le=8)
+    categories: BuildCategoryCounts | None = None
+    dominant_category: BuildCategory | None = None
+    style: BuildStyle | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class BuildResources(StrictModel):
+    health_maximum: float | None = Field(default=None, gt=0)
+    ram_maximum: float | None = Field(default=None, gt=0)
+    armor: float | None = Field(default=None, ge=0)
+
+
+class BuildProfile(StrictModel):
+    profile_version: Literal["0.8.5"] = "0.8.5"
+    operating_system: BuildOperatingSystem | None = None
+    quickhack_loadout: BuildQuickhackLoadout | None = None
+    resources: BuildResources | None = None
+    current_weapon_record_id: str | None = Field(default=None, max_length=256)
+    summary_key: BuildStyle | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    evidence: list[str] = Field(default_factory=list, max_length=12)
+    limitations: list[str] = Field(default_factory=list, max_length=12)
+
+
 class DeepGameState(StrictModel):
     capabilities: DeepGameStateCapabilities | None = None
     player: DeepPlayerState | None = None
@@ -176,6 +228,7 @@ class DeepGameState(StrictModel):
     weapon: DeepWeaponState | None = None
     status_effects: DeepStatusEffectsState | None = None
     cyberdeck: DeepCyberdeckState | None = None
+    build_profile: BuildProfile | None = None
 
 
 class GameState(StrictModel):

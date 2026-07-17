@@ -116,6 +116,16 @@ class SceneContextBuilder:
         scene.cyberdeck_program_count = len(cyberdeck.programs) if cyberdeck and cyberdeck.programs is not None else None
         scene.cyberdeck_program_capacity = cyberdeck.program_capacity.total if cyberdeck and cyberdeck.program_capacity else None
         scene.installed_quickhack_record_ids = [program.record_id for program in cyberdeck.programs[:8]] if cyberdeck and cyberdeck.programs else []
+        profile = deep.build_profile
+        loadout = profile.quickhack_loadout if profile else None
+        scene.build_style = profile.summary_key if profile else None
+        scene.build_confidence = profile.confidence if profile else None
+        scene.quickhack_dominant_category = loadout.dominant_category if loadout else None
+        scene.quickhack_known_count = loadout.known_programs if loadout else None
+        scene.quickhack_unknown_count = loadout.unknown_programs if loadout else None
+        scene.quickhack_category_counts = loadout.categories.model_dump() if loadout and loadout.categories else None
+        scene.build_evidence = profile.evidence[:12] if profile else []
+        scene.build_limitations = profile.limitations[:12] if profile else []
         scene.vehicle_state = state.player.in_vehicle if (capabilities or scene.capabilities).vehicle_state else scene.vehicle_state
         if capabilities is not None:
             scene.capabilities = capabilities
@@ -412,6 +422,10 @@ class SceneContextBuilder:
             scene.cyberdeck_record_id, scene.cyberdeck_quality, scene.cyberdeck_iconic,
             scene.cyberdeck_program_count, scene.cyberdeck_program_capacity,
             tuple(scene.installed_quickhack_record_ids),
+            scene.build_style, scene.build_confidence, scene.quickhack_dominant_category,
+            scene.quickhack_known_count, scene.quickhack_unknown_count,
+            tuple(sorted((scene.quickhack_category_counts or {}).items())),
+            tuple(scene.build_evidence), tuple(scene.build_limitations),
             scene.combat_state, scene.vehicle_state,
             round(scene.total_damage, 1), round(scene.total_healing, 1), scene.damage_hits,
         )
@@ -426,6 +440,10 @@ class SceneContextBuilder:
             scene.cyberdeck_record_id, scene.cyberdeck_quality, scene.cyberdeck_iconic,
             scene.cyberdeck_program_count, scene.cyberdeck_program_capacity,
             tuple(scene.installed_quickhack_record_ids),
+            scene.build_style, scene.build_confidence, scene.quickhack_dominant_category,
+            scene.quickhack_known_count, scene.quickhack_unknown_count,
+            tuple(sorted((scene.quickhack_category_counts or {}).items())),
+            tuple(scene.build_evidence), tuple(scene.build_limitations),
             scene.player_available, scene.session_available, scene.is_pre_game, scene.vehicle_state,
         )
 

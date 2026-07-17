@@ -1,7 +1,7 @@
 {
   "name": "siena-cyberpunk-companion-ui",
   "private": true,
-  "version": "0.8.4",
+  "version": "0.10.0",
   "type": "module",
   "scripts": {"dev":"vite --host 127.0.0.1","test":"node --experimental-strip-types --test src/*.test.ts","build":"tsc -b && vite build","check:lua":"node scripts/check-lua.mjs","preview":"vite preview --host 127.0.0.1"},
   "dependencies": {"@vitejs/plugin-react":"latest","vite":"latest","typescript":"latest","react":"latest","react-dom":"latest"},

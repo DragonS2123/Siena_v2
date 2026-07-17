@@ -1,0 +1,6 @@
+{
+  "name": "Siena Deep Game State Research",
+  "version": "0.8.0-audit1",
+  "description": "Disabled-by-default, manual, read-only API research harness. No HTTP or production integration.",
+  "author": "Siena Project"
+}

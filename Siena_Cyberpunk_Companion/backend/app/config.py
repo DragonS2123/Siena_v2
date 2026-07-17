@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     scene_resolution_reaction_enabled: bool = True
     scene_reaction_stale_grace_seconds: float = Field(default=3.0, ge=0)
     scene_recent_reactions_limit: int = Field(default=5, ge=1, le=5)
+    contextual_companion_enabled: bool = True
+    context_event_window_seconds: float = Field(default=60.0, gt=0, le=600)
+    context_event_window_max_items: int = Field(default=20, ge=1, le=100)
+    grouping_window_seconds: float = Field(default=3.0, ge=0.25, le=5)
+    low_priority_queue_limit: int = Field(default=3, ge=1, le=10)
+    recovery_voice_enabled: bool = False
+    build_aware_reactions_enabled: bool = True
     voice_enabled: bool = False
     voice_muted: bool = False
     voice_min_interval_seconds: float = Field(default=8.0, ge=0)
@@ -97,6 +104,24 @@ class Settings(BaseSettings):
     presence_max_text_chars: int = Field(default=320, ge=32, le=320)
     presence_error_backoff_ms: int = Field(default=2000, ge=250, le=60_000)
     presence_max_backoff_ms: int = Field(default=30_000, ge=1000, le=300_000)
+    npc_controller_enabled: bool = False
+    npc_command_poll_interval_ms: int = Field(default=400, ge=250, le=500)
+    npc_command_queue_max: int = Field(default=16, ge=1, le=16)
+    npc_spawn_distance: float = Field(default=2.0, ge=1.5, le=2.5)
+    npc_vertical_offset: float = Field(default=0.1, ge=0.0, le=0.5)
+    npc_command_expiry_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
+    npc_presence_enabled: bool = False
+    npc_auto_spawn: bool = False
+    npc_auto_follow: bool = True
+    npc_spawn_delay_seconds: float = Field(default=3.0, ge=1.0, le=30.0)
+    npc_follow_distance: float = Field(default=2.5, ge=1.5, le=8.0)
+    npc_return_distance: float = Field(default=12.0, ge=5.0, le=40.0)
+    npc_rescue_distance: float = Field(default=40.0, ge=15.0, le=100.0)
+    npc_rescue_enabled: bool = False
+    npc_suspend_during_combat: bool = True
+    npc_suspend_in_vehicle: bool = True
+    npc_in_game_subtitles_enabled: bool = True
+    npc_voice_embodiment_enabled: bool = True
     companion_too_far_meters: float = Field(default=20.0, gt=0)
     companion_stuck_seconds: float = Field(default=5.0, gt=0)
     companion_movement_epsilon: float = Field(default=0.25, gt=0)

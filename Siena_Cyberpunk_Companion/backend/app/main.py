@@ -7,10 +7,12 @@ from typing import Callable
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import bridge, commands, events, health, presence, reactions, scenes, telemetry, voice, websocket
+from app.api import bridge, commands, events, health, npc, presence, reactions, scenes, telemetry, voice, websocket
 from app.config import Settings, get_settings
 from app.services.decision_scheduler import DecisionScheduler
 from app.services.bridge_registry import BridgeRegistry
+from app.services.build_awareness import BuildAwareness
+from app.services.contextual_companion import ContextualCompanion
 from app.services.event_bus import EventBus
 from app.services.event_filter import EventFilter
 from app.services.event_synthesizer import EventSynthesizer
@@ -26,6 +28,9 @@ from app.services.siena_tts_client import SienaTtsClient
 from app.services.voice_behavior_policy import VoiceBehaviorPolicy
 from app.services.voice_dispatch import VoiceDispatchService
 from app.services.in_game_presence import InGamePresencePolicy, InGamePresenceProjection
+from app.services.npc_command_queue import NpcCommandQueue
+from app.services.embodied_companion import EmbodiedCompanion
+from app.models.embodiment import EmbodimentSettings
 
 logger = logging.getLogger("siena_observer")
 
@@ -47,33 +52,59 @@ class Services:
     presence: InGamePresenceProjection
     core_client: DisabledSienaCoreClient
     bridge_registry: BridgeRegistry
+    build_awareness: BuildAwareness
+    contextual_companion: ContextualCompanion
+    npc_commands: NpcCommandQueue
+    embodiment: EmbodiedCompanion
     diff: Callable = diff_states
 
     async def publish_event(self, event, capabilities=None):
         await self.bus.publish("event", event)
         await self.bus.publish("game_event", event)
+        contextual_traces = []
         if self.settings.scene_enabled:
             scene_update = self.scene_builder.apply(event, capabilities)
-            opportunity = self.behavior_policy.evaluate(scene_update)
+            semantic = scene_update.normalized_event.semantic_type
+            absorb_before_policy = self.contextual_companion.enabled and semantic in {
+                "weapon_drawn", "weapon_holstered", "weapon_changed",
+                "status_effects_increased", "status_effects_decreased",
+            }
+            legacy_opportunity = None if absorb_before_policy else self.behavior_policy.evaluate(scene_update)
+            decision = self.contextual_companion.evaluate(
+                scene_update, legacy_opportunity,
+                "absorbed_as_context" if absorb_before_policy else self.behavior_policy.last_suppression_reason,
+            )
+            opportunity = decision.opportunity
             reaction = (
-                await self.reaction_dispatch.handle_opportunity(opportunity)
+                await self.dispatch_context_opportunity(opportunity)
                 if opportunity
                 else None
             )
             if not opportunity:
                 await self.reaction_dispatch.observe_event(event)
+            contextual_traces = decision.traces
         else:
             reaction = await self.reaction_dispatch.handle_event(event)
         await self.voice_dispatch.observe_event(event)
         if reaction:
             await self.bus.publish("siena_reaction", reaction)
             await self.voice_dispatch.handle_reaction(reaction)
+            if self.settings.scene_enabled and opportunity:
+                await self.bus.publish("contextual_companion_trace", self.contextual_companion.mark_emitted(opportunity))
+        for trace in contextual_traces:
+            await self.bus.publish("contextual_companion_trace", trace)
+        if self.settings.scene_enabled:
+            await self.bus.publish("contextual_companion_status", self.contextual_companion.status())
         if self.settings.scene_enabled and scene_update.significant and scene_update.scene:
             await self.bus.publish("scene_context_updated", scene_update.scene)
         command = await self.scheduler.consider(event)
         if command:
             await self.bus.publish("command", command)
         return reaction, command
+
+    async def dispatch_context_opportunity(self, opportunity, *, pending: bool = False):
+        reaction = await self.reaction_dispatch.handle_opportunity(opportunity, observe_event=not pending)
+        return reaction
 
     def state_payload(self, state):
         data = state.model_dump(mode="json")
@@ -95,6 +126,8 @@ class Services:
             "scene": scene.model_dump(mode="json") if scene else None,
             "voice": (await self.voice_dispatch.status()).model_dump(mode="json"),
             "presence": self.presence.status().model_dump(mode="json"),
+            "contextual_companion": self.contextual_companion.status().model_dump(mode="json"),
+            "npc": (await self.embodiment.status()).model_dump(mode="json"),
             "active_source": bridge_status.active_source,
             "bridge": bridge_status.model_dump(mode="json"),
         }
@@ -204,7 +237,42 @@ def create_services(settings: Settings | None = None) -> Services:
         poll_interval_ms=config.presence_poll_interval_ms,
     )
     bus.subscribe(presence_projection.observe)
-    dispatch.on_reaction_published = voice_dispatch.handle_reaction
+    contextual_companion = ContextualCompanion(
+        enabled=config.contextual_companion_enabled,
+        event_window_seconds=config.context_event_window_seconds,
+        event_window_max_items=config.context_event_window_max_items,
+        grouping_window_seconds=config.grouping_window_seconds,
+        low_priority_queue_limit=config.low_priority_queue_limit,
+        recovery_voice_enabled=config.recovery_voice_enabled,
+        build_aware_reactions_enabled=config.build_aware_reactions_enabled,
+    )
+    npc_commands = NpcCommandQueue(
+        enabled=config.npc_controller_enabled,
+        capacity=config.npc_command_queue_max,
+        default_expiry_seconds=config.npc_command_expiry_seconds,
+    )
+    embodiment = EmbodiedCompanion(npc_commands, EmbodimentSettings(
+        npc_presence_enabled=config.npc_presence_enabled,
+        npc_auto_spawn=config.npc_auto_spawn,
+        npc_auto_follow=config.npc_auto_follow,
+        npc_spawn_delay_seconds=config.npc_spawn_delay_seconds,
+        npc_follow_distance=config.npc_follow_distance,
+        npc_return_distance=config.npc_return_distance,
+        npc_rescue_distance=config.npc_rescue_distance,
+        npc_rescue_enabled=config.npc_rescue_enabled,
+        npc_suspend_during_combat=config.npc_suspend_during_combat,
+        npc_suspend_in_vehicle=config.npc_suspend_in_vehicle,
+        npc_in_game_subtitles_enabled=config.npc_in_game_subtitles_enabled,
+        npc_voice_embodiment_enabled=config.npc_voice_embodiment_enabled,
+    ))
+    voice_dispatch.on_playback_event = embodiment.speech_event
+
+    async def on_reaction_published(reaction):
+        await bus.publish("contextual_companion_trace", contextual_companion.mark_reaction(reaction))
+        await bus.publish("contextual_companion_status", contextual_companion.status())
+        await voice_dispatch.handle_reaction(reaction)
+
+    dispatch.on_reaction_published = on_reaction_published
     return Services(
         settings=config,
         store=StateStore(),
@@ -232,6 +300,10 @@ def create_services(settings: Settings | None = None) -> Services:
         presence=presence_projection,
         core_client=DisabledSienaCoreClient(),
         bridge_registry=BridgeRegistry(config.protocol_version, config.bridge_timeout_seconds, config.bridge_registry_size, config.telemetry_source),
+        build_awareness=BuildAwareness(),
+        contextual_companion=contextual_companion,
+        npc_commands=npc_commands,
+        embodiment=embodiment,
     )
 
 
@@ -240,6 +312,13 @@ async def maintain_pipeline(services: Services) -> None:
         await asyncio.sleep(min(services.settings.damage_window_seconds / 2, 0.25))
         for event in [*services.filter.flush_due(), *services.synthesizer.expire_sessions()]:
             await services.publish_event(event)
+        for opportunity in services.contextual_companion.flush_due():
+            reaction = await services.dispatch_context_opportunity(opportunity, pending=True)
+            if reaction:
+                await services.bus.publish("siena_reaction", reaction)
+                await services.voice_dispatch.handle_reaction(reaction)
+                await services.bus.publish("contextual_companion_trace", services.contextual_companion.mark_emitted(opportunity))
+                await services.bus.publish("contextual_companion_status", services.contextual_companion.status())
         if services.presence.tick():
             await services.bus.publish("in_game_presence_status", services.presence.status())
 
@@ -262,13 +341,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await services.reaction_dispatch.stop()
             await services.voice_dispatch.stop()
 
-    app = FastAPI(title="Siena Cyberpunk Companion", version="0.8.4", lifespan=lifespan)
+    app = FastAPI(title="Siena Cyberpunk Companion", version="0.10.0", lifespan=lifespan)
     app.state.services = services
     app.add_middleware(
         CORSMiddleware,
         allow_origins=services.settings.cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type"],
     )
     app.include_router(health.router)
@@ -279,6 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(scenes.router)
     app.include_router(voice.router)
     app.include_router(presence.router)
+    app.include_router(npc.router)
     app.include_router(commands.router)
     app.include_router(websocket.router)
     return app

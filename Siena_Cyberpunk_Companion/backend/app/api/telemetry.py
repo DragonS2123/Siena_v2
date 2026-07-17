@@ -13,6 +13,8 @@ router = APIRouter(prefix="/api/v1/telemetry")
 @router.post("/state", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_state(state: GameState, request: Request) -> dict:
     services = request.app.state.services
+    # v0.8.5 is derived locally from the already-confirmed telemetry block.
+    services.build_awareness.enrich(state)
     if state.source == "cet":
         try:
             await services.bridge_registry.authorize_cet(state.bridge_version)
@@ -30,6 +32,8 @@ async def ingest_state(state: GameState, request: Request) -> dict:
         bridge_status = await services.bridge_registry.status()
         await services.bus.publish("bridge_status", bridge_status)
         return {"accepted": True, "active": False, "active_source": active_source, "session_id": state.session_id, "sequence": state.sequence, "events_published": 0, "commands_created": 0}
+
+    await services.embodiment.observe_state(state)
 
     if source_changed:
         previous = None
@@ -49,6 +53,8 @@ async def ingest_state(state: GameState, request: Request) -> dict:
     )
     accepted = services.filter.process(generated)
     scene_state_changed = services.scene_builder.observe_state(state, capabilities)
+    for trace in services.contextual_companion.observe_scene(services.scene_builder.current()):
+        await services.bus.publish("contextual_companion_trace", trace)
     await services.bus.publish("state", services.state_payload(state))
     commands = []
     reactions = []
@@ -59,6 +65,9 @@ async def ingest_state(state: GameState, request: Request) -> dict:
         if command:
             commands.append(command)
     scene_state_changed = services.scene_builder.observe_state(state, capabilities) or scene_state_changed
+    for trace in services.contextual_companion.observe_scene(services.scene_builder.current()):
+        await services.bus.publish("contextual_companion_trace", trace)
+    await services.bus.publish("contextual_companion_status", services.contextual_companion.status())
     if scene_state_changed:
         scene = services.scene_builder.current()
         if scene is not None:

@@ -1,6 +1,11 @@
-# Siena Cyberpunk Companion v0.8.4
+# Siena Cyberpunk Companion v0.10.0
 
-Read-only companion pipeline for Cyberpunk 2077. It accepts the existing CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, and preserves the v0.7 in-game presence path. v0.8.4 adds the live-confirmed, bounded equipped-cyberdeck and installed-quickhack inventory slice without target scanning or action metadata. See [V0.8.4_CYBERDECK_QUICKHACK_INVENTORY.md](V0.8.4_CYBERDECK_QUICKHACK_INVENTORY.md).
+v0.10.0 adds the deterministic Embodied Companion around the proven v0.9.1
+transport. Runtime uses the stable `Siena.SienaCompanion` record, CET hotkeys and
+the existing voice lifecycle. See `V0.10.0_SIENA_EMBODIED_COMPANION.md`; the real
+binary `siena_default` appearance remains an explicit manual WolvenKit blocker.
+
+Read-only companion pipeline for Cyberpunk 2077. It accepts the existing CET/RedHttpClient telemetry (or the simulator), converts 4 Hz state into rare normalized events, and preserves the v0.7 in-game presence path. v0.9.0 adds deterministic contextual situation tracking, bounded event grouping and central reaction arbitration without new game runtime reads or autonomous actions. See [V0.9.0_CONTEXTUAL_COMPANION_INTELLIGENCE.md](V0.9.0_CONTEXTUAL_COMPANION_INTELLIGENCE.md).
 
 It does **not** send commands to Cyberpunk, control the player/NPCs, play audio in CET, start Siena/Ollama, or invoke TTS from Lua. The legacy `CompanionCommand` API remains only as a display-only v0.1/v0.2 compatibility surface and is never consumed by the CET mod. Siena Core, voice, backend presence, and local CET presence are separate opt-ins.
 

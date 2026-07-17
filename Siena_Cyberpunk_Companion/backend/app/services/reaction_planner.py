@@ -53,9 +53,9 @@ class TemplateReactionProvider:
         return TEMPLATES.get(event.event_type)
 
     def text_for_opportunity(self, opportunity: ReactionOpportunity) -> str:
-        return self.text_for_focus(opportunity.focus)
+        return self.text_for_focus(opportunity.focus, opportunity.tactical_context)
 
-    def text_for_focus(self, focus: ReactionFocus) -> str:
+    def text_for_focus(self, focus: ReactionFocus, tactical_context: dict | None = None) -> str:
         templates = {
             ReactionFocus.SESSION_GREETING: "Я подключилась и наблюдаю за происходящим.",
             ReactionFocus.DANGER_WARNING: "Здоровье критическое. Найди укрытие.",
@@ -69,6 +69,8 @@ class TemplateReactionProvider:
             ReactionFocus.RESOURCE_RECOVERY: "Оперативная память восстановилась.",
             ReactionFocus.EQUIPMENT_CHANGE: "Оружие сменилось.",
         }
+        if focus == ReactionFocus.DANGER_WARNING and tactical_context and tactical_context.get("repeated_category") is True:
+            return "Снова опасно низкое здоровье. Найди укрытие."
         return templates[focus]
 
 

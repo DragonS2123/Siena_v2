@@ -107,6 +107,14 @@ class SceneContext(BaseModel):
     cyberdeck_program_count: int | None = Field(default=None, ge=0, le=8)
     cyberdeck_program_capacity: int | None = Field(default=None, ge=0, le=8)
     installed_quickhack_record_ids: list[str] = Field(default_factory=list, max_length=8)
+    build_style: Literal["no_cyberdeck", "cyberdeck_unknown", "offensive_netrunner", "control_netrunner", "recon_netrunner", "mixed_netrunner", "unknown"] | None = None
+    build_confidence: float | None = Field(default=None, ge=0, le=1)
+    quickhack_dominant_category: Literal["offensive", "control", "recon", "utility", "unknown"] | None = None
+    quickhack_known_count: int | None = Field(default=None, ge=0, le=8)
+    quickhack_unknown_count: int | None = Field(default=None, ge=0, le=8)
+    quickhack_category_counts: dict[str, int] | None = None
+    build_evidence: list[str] = Field(default_factory=list, max_length=12)
+    build_limitations: list[str] = Field(default_factory=list, max_length=12)
     player_available: bool | None = None
     session_available: bool | None = None
     is_pre_game: bool | None = None
@@ -139,6 +147,16 @@ class SceneContext(BaseModel):
             raise ValueError("installed quickhack IDs must be stable Items.* record IDs")
         return values
 
+    @field_validator("quickhack_category_counts")
+    @classmethod
+    def category_counts_are_bounded(cls, values: dict[str, int] | None) -> dict[str, int] | None:
+        if values is None:
+            return None
+        allowed = {"offensive", "control", "recon", "utility", "unknown"}
+        if set(values) - allowed or len(values) > 5 or any(value < 0 or value > 8 for value in values.values()):
+            raise ValueError("quickhack category counts must use the bounded catalog categories")
+        return values
+
 
 class SceneUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -168,6 +186,10 @@ class ReactionOpportunity(BaseModel):
     trigger_event: GameEvent
     replaces_request_id: str | None = None
     suppresses_event_ids: list[str] = Field(default_factory=list)
+    related_event_types: list[str] = Field(default_factory=list, max_length=8)
+    tactical_context: dict[str, Any] | None = None
+    delivery_hint: Literal["text_only", "voice_and_text"] | None = None
+    reaction_category: str | None = Field(default=None, max_length=64)
 
     @field_validator("created_at", "expires_at")
     @classmethod

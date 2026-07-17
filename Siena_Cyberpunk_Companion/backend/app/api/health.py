@@ -5,7 +5,7 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "siena-cyberpunk-companion", "version": "0.8.4"}
+    return {"status": "ok", "service": "siena-cyberpunk-companion", "version": "0.10.0"}
 
 
 @router.get("/api/v1/status")
@@ -26,5 +26,6 @@ async def status(request: Request) -> dict:
         "scheduler": await services.scheduler.status(),
         "active_source": observer_status["active_source"],
         "bridge": observer_status["bridge"],
+        "npc": observer_status["npc"],
         "integrations": {"siena_core": "disabled", "cyberpunk_bridge": "simulator_only"},
     }

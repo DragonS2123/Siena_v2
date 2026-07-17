@@ -184,9 +184,10 @@ class ReactionDispatchService:
         await self._enqueue(request)
         return None
 
-    async def handle_opportunity(self, opportunity: ReactionOpportunity) -> SienaReaction | None:
+    async def handle_opportunity(self, opportunity: ReactionOpportunity, *, observe_event: bool = True) -> SienaReaction | None:
         event = opportunity.trigger_event
-        await self.observe_event(event)
+        if observe_event:
+            await self.observe_event(event)
         if not await self.planner.reserve_opportunity(event):
             return None
         if self.configured_provider != "siena_core":
@@ -203,6 +204,7 @@ class ReactionDispatchService:
                 scene_revision=opportunity.scene_revision,
                 scene_phase=opportunity.scene_snapshot.phase,
                 focus=opportunity.focus,
+                metadata={"delivery_hint": opportunity.delivery_hint, "reaction_category": opportunity.reaction_category, "related_event_types": opportunity.related_event_types},
             )
             self._remember_reaction(reaction)
             if self.scene_builder:
@@ -217,6 +219,10 @@ class ReactionDispatchService:
             focus=opportunity.focus,
             scene_snapshot=opportunity.scene_snapshot,
             opportunity_expires_at=opportunity.expires_at,
+            related_event_types=opportunity.related_event_types,
+            tactical_context=opportunity.tactical_context,
+            delivery_hint=opportunity.delivery_hint,
+            reaction_category=opportunity.reaction_category,
         )
         if event.priority == EventPriority.P0_CRITICAL:
             for dropped in await self.queue.drop_weaker_scene_requests(request):
@@ -372,7 +378,7 @@ class ReactionDispatchService:
             event_id=event.event_id, session_id=event.session_id, event_type=event.event_type,
             text=result.text, priority=REACTION_PRIORITY[event.severity or EventSeverity.MEDIUM], provider="siena_core",
             requested_provider="siena_core", latency_ms=result.latency_ms, model=result.model,
-            request_id=request.request_id, metadata={"actual_provider": "siena_core"},
+            request_id=request.request_id, metadata={"actual_provider": "siena_core", "delivery_hint": request.delivery_hint, "reaction_category": request.reaction_category, "related_event_types": request.related_event_types},
             scene_id=request.scene_id, scene_revision=request.scene_revision,
             scene_phase=request.scene_phase, focus=request.focus,
         )
@@ -382,7 +388,7 @@ class ReactionDispatchService:
         if self.fallback_provider != "template":
             return None
         text = (
-            TemplateReactionProvider().text_for_focus(request.focus)
+            TemplateReactionProvider().text_for_focus(request.focus, request.tactical_context)
             if request.focus
             else TemplateReactionProvider().text_for(request.event)
         )
@@ -399,7 +405,7 @@ class ReactionDispatchService:
             request_id=request.request_id,
             scene_id=request.scene_id, scene_revision=request.scene_revision,
             scene_phase=request.scene_phase, focus=request.focus,
-            metadata={"requested_provider": "siena_core", "actual_provider": "template", "fallback_reason": error.category, "circuit_state": circuit},
+            metadata={"requested_provider": "siena_core", "actual_provider": "template", "fallback_reason": error.category, "circuit_state": circuit, "delivery_hint": request.delivery_hint, "reaction_category": request.reaction_category, "related_event_types": request.related_event_types},
         )
 
     async def status(self) -> ReactionProviderStatus:

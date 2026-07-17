@@ -148,5 +148,9 @@ class ReactionRequest(BaseModel):
     focus: ReactionFocus | None = None
     scene_snapshot: SceneContext | None = None
     opportunity_expires_at: datetime | None = None
+    related_event_types: list[str] = Field(default_factory=list, max_length=8)
+    tactical_context: dict[str, Any] | None = None
+    delivery_hint: Literal["text_only", "voice_and_text"] | None = None
+    reaction_category: str | None = Field(default=None, max_length=64)
     language: Literal["ru", "en"] = "ru"
     queued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
