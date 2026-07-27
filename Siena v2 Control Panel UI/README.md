@@ -1,11 +1,14 @@
+# Siena Desktop
 
-  # Read functionality
+Electron + React shell for the local Siena backend.
 
-  This is a code bundle for Read functionality. The original project is available at https://www.figma.com/design/Ycq9iWfd9E9C8i8Td0zTcj/Read-functionality.
+```powershell
+npm install
+npm run typecheck
+npm test
+npm run build
+npm run desktop
+```
 
-  ## Running the code
-
-  Run `npm i` to install the dependencies.
-
-  Run `npm run dev` to start the development server.
-  
+The backend must be available at `http://127.0.0.1:8000`. The renderer has no
+Node integration and uses only the documented local HTTP API.
