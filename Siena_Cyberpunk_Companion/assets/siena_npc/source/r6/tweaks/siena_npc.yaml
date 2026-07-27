@@ -1,6 +1,0 @@
-# Production TweakXL source. Deployment refuses this record until the referenced
-# Siena-owned CR2W resources have been authored and packed by WolvenKit.
-Siena.SienaCompanion:
-  $base: Character.CitizenRichFemaleCasual
-  entityTemplatePath: siena\entities\siena_default.ent
-  appearanceName: siena_default

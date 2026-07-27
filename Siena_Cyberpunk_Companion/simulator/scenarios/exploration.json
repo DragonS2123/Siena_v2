@@ -1,9 +1,0 @@
-{
-  "initial": {"schema_version":"1.0","session_id":"replaced","sequence":0,"captured_at":"2026-01-01T00:00:00Z","game":{"running":false,"loaded":false,"paused":false},"player":{"health":100,"max_health":100,"in_combat":false,"in_vehicle":false,"position":{"x":0,"y":0,"z":0}},"companion":{"present":false,"health":100,"max_health":100,"distance_to_player":0,"current_intent":"follow","moving":false},"environment":{"district":"Watson","visible_hostiles":0,"highest_threat_id":null}},
-  "steps": [
-    {"duration":1,"patch":{"game":{"running":true}}},
-    {"duration":1,"patch":{"game":{"loaded":true},"companion":{"present":true,"distance_to_player":4,"moving":true}}},
-    {"duration":2,"patch":{"player":{"position":{"x":10,"y":25,"z":3}},"companion":{"distance_to_player":5}}},
-    {"duration":2,"patch":{"environment":{"district":"Westbrook"},"player":{"position":{"x":30,"y":18,"z":2}},"companion":{"distance_to_player":6}}}
-  ]
-}

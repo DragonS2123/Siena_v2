@@ -1,6 +1,0 @@
-{
-  "name": "Siena NPC Runtime Research",
-  "version": "0.9.0.1-research1",
-  "description": "Disabled-by-default manual gated NPC lifecycle research. No backend transport or automatic spawn.",
-  "author": "Siena project"
-}

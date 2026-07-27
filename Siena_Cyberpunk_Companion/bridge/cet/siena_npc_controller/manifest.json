@@ -1,6 +1,0 @@
-{
-  "name": "Siena Embodied Companion",
-  "version": "0.10.0",
-  "description": "Deterministic single-Siena state machine, speech embodiment, subtitles and local controls using the existing backend and RedHttpClient.",
-  "author": "Siena project"
-}

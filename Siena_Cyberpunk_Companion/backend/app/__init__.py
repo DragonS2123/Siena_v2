@@ -1,1 +1,0 @@
-"""Siena Cyberpunk Observer backend."""

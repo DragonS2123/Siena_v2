@@ -1,4 +1,0 @@
-{
-  "initial": {"schema_version":"1.0","session_id":"replaced","sequence":0,"captured_at":"2026-01-01T00:00:00Z","game":{"running":true,"loaded":true,"paused":false},"player":{"health":100,"max_health":100,"in_combat":false,"in_vehicle":false,"position":{"x":0,"y":0,"z":0}},"companion":{"present":true,"health":100,"max_health":100,"distance_to_player":3,"current_intent":"follow","moving":true},"environment":{"district":"City Center","visible_hostiles":0,"highest_threat_id":null}},
-  "steps": [{"duration":1,"patch":{}},{"duration":3,"patch":{"player":{"in_vehicle":true,"position":{"x":100,"y":45,"z":0}},"companion":{"distance_to_player":2}}},{"duration":2,"patch":{"player":{"in_vehicle":false,"position":{"x":140,"y":70,"z":0}}}}]
-}
