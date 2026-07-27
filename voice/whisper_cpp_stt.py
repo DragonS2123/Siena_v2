@@ -1,22 +1,4 @@
-"""STT — whisper.cpp (GGML/Vulkan), Phase 1 (HANDOFF_v2.md).
-
-Same technical-service role as every other voice/ provider — only turns
-audio into text, never decides what to do with it (ARCHITECTURE.md: the
-recognized text goes back through the normal chat flow exactly as if the
-user had typed it). This is a SEPARATE, standalone service from
-voice/stt.py's WhisperSTTProvider (faster-whisper, Python/CTranslate2) —
-that file and its provider are completely untouched by this pass; this one
-shells out to a real whisper.cpp CLI subprocess instead.
-
-AMD/Vulkan finding (storage/stt_probe/whisper_cpp_build_probe.txt,
-confirmed via live crash reproduction, not just in theory): on this
-machine/build, whisper-cli.exe on the Vulkan backend with its DEFAULT
-decode settings (beam-size 5, best-of 5) segfaults 100% of the time.
-Greedy decode (beam-size 1, best-of 1) works correctly and is fast. This
-service always forces greedy decode (config.WHISPER_CPP_BEAM_SIZE/
-WHISPER_CPP_BEST_OF) — do not change that without re-testing against a
-real crash reproduction first.
-"""
+"""Local whisper.cpp STT provider with Vulkan and controlled CPU fallback."""
 
 from __future__ import annotations
 

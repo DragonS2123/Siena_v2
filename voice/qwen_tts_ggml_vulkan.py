@@ -1,19 +1,4 @@
-"""Qwen3-TTS provider backed by qwentts.cpp (GGML/Vulkan) — confirmed working
-on AMD RX 7900 XTX. No torch, no CUDA: this talks to `tts-server.exe`
-(external/qwentts.cpp/build/Release) over its OpenAI-compatible HTTP API
-(POST /v1/audio/speech), the same "only the mouth, not the brain" contract as
-every other TTS provider in this package (see voice/tts.py::SileroTTSProvider)
-— Runtime doesn't decide WHAT to say, only how to voice text the model (or a
-direct /api/voice/synthesize caller) already produced.
-
-Server lifecycle: Runtime doesn't decide whether the user WANTS the server
-running — config.QWEN_TTS_KEEP_SERVER_WARM (human's explicit choice) controls
-whether it's started eagerly at backend boot; otherwise it's started lazily
-on the first real synthesize_to_file() call, mirroring the lazy-load pattern
-every other provider here already uses. POST /api/voice/tts/start / /stop
-(api/server.py) are the explicit manual actions a human can take regardless
-of that setting.
-"""
+"""Local Qwen3-TTS provider backed by qwentts.cpp (GGML/Vulkan)."""
 
 from __future__ import annotations
 
@@ -28,7 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 from voice.text_sanitize import sanitize_text_for_tts_detailed
-from voice.tts import TTSUnavailableError, _LoggerLike
+from voice.errors import LoggerLike, TTSUnavailableError
 
 _READY_POLL_INTERVAL_SEC = 0.5
 
@@ -48,7 +33,7 @@ class QwenTTSGgmlVulkanProvider:
         output_dir: Path,
         auto_start: bool = True,
         startup_timeout_sec: int = 30,
-        logger: _LoggerLike | None = None,
+        logger: LoggerLike | None = None,
     ):
         self._server_url = server_url.rstrip("/")
         parsed = urlparse(self._server_url)
@@ -254,87 +239,6 @@ class QwenTTSGgmlVulkanProvider:
             "sample_rate": sample_rate,
             "elapsed_sec": round(elapsed_sec, 3),
         }
-
-    def stream_pcm(self, text: str, voice: str | None = None, language: str | None = None):
-        """Experimental (Phase 2/3, HANDOFF_v2.md) — proxies raw PCM chunks
-        from qwentts.cpp's tts-server.exe (response_format="pcm") as they
-        arrive. A plain generator; completely separate from
-        synthesize_to_file()/the stable WAV-per-request path above, which
-        this method never calls or affects.
-
-        `language` is accepted for API-shape completeness (the endpoint's
-        request contract includes it) but is NOT forwarded anywhere: the
-        raw tts-server.exe HTTP API (external/qwentts.cpp/src/tts-server.h)
-        only accepts input/voice/response_format per request — the spoken
-        language is fixed for the whole server process by the --lang flag
-        given at startup (see ensure_server_running() above), not
-        per-request. This method deliberately does NOT restart the server
-        to honor a different `language` here — doing so would silently
-        kill/replace a server other callers (or a human) may depend on
-        being warm, which is out of scope for an experimental streaming
-        probe.
-
-        Note on Stop (Phase 3, HANDOFF_v2.md): a client aborting its fetch
-        mid-stream cannot interrupt a blocking `response.iter_content()`
-        read here from the outside — Starlette runs the generator built on
-        top of this in a worker thread with no cancellation hook into a
-        blocking call already in progress. An ASGI-level disconnect watcher
-        was tried and confirmed (via live testing, not just in theory) to
-        never detect the disconnect while this call is blocked. So Stop
-        works by having the frontend immediately abort its own fetch/audio
-        pipeline and report the disconnect itself — this generator (and the
-        upstream tts-server request it's blocked on) simply keeps running
-        until tts-server finishes that utterance on its own. See
-        api/server.py::_stream_pcm_body for the full explanation.
-
-        scripts/probe_qwen_tts_streaming.py showed response_format=pcm with
-        stream=True surviving 36 real requests (including repeats of the
-        exact short Russian phrase that crashed a prior manual probe) — but
-        this is still qwen-only with NO Silero fallback by design: a
-        fallback would silently swap to a non-streaming provider mid-request,
-        which makes no sense for a streaming contract. Callers must treat
-        any failure here as an honest error, never paper over it.
-
-        Yields raw PCM bytes (s16le, 24 kHz, mono per tts-server.h). Raises
-        TTSUnavailableError if the connection/initial response fails, or if
-        the connection breaks partway through (after some bytes may already
-        have been yielded — same "proxy, don't buffer" tradeoff as any other
-        streamed passthrough).
-        """
-        self.ensure_server_running()
-
-        speaker = voice or self._default_speaker
-        sanitized = sanitize_text_for_tts_detailed(text, strip_all_numbers=False)
-        text = sanitized.text
-
-        try:
-            response = requests.post(
-                f"{self._server_url}/v1/audio/speech",
-                json={"input": text, "voice": speaker, "response_format": "pcm"},
-                timeout=self._timeout,
-                stream=True,
-            )
-        except requests.RequestException as exc:
-            raise TTSUnavailableError(f"qwentts.cpp stream request failed: {exc}") from exc
-
-        if response.status_code != 200:
-            try:
-                body_preview = response.text[:300]
-            except Exception:
-                body_preview = "<unreadable body>"
-            response.close()
-            raise TTSUnavailableError(
-                f"qwentts.cpp stream request returned HTTP {response.status_code}: {body_preview}"
-            )
-
-        try:
-            for chunk in response.iter_content(chunk_size=4096):
-                if chunk:
-                    yield chunk
-        except requests.RequestException as exc:
-            raise TTSUnavailableError(f"qwentts.cpp stream broke mid-response: {exc}") from exc
-        finally:
-            response.close()
 
     @staticmethod
     def _wav_duration_and_rate(path: Path) -> tuple[float, int]:

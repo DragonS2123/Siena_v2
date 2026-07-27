@@ -25,6 +25,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     title TEXT,
+    model_override TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -76,33 +77,13 @@ ON conversation_events(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_attachments_message_id
 ON conversation_attachments(message_id);
 
--- Siena Remote (0.6.0): maps a Relay-issued remote conversation_id (created
--- once by the phone, persisted across app restarts) to the internal
--- conversation this backend already uses for /api/chat + the React UI.
--- Created once per remote conversation_id, never updated afterwards.
-CREATE TABLE IF NOT EXISTS remote_conversation_links (
-    remote_conversation_id TEXT PRIMARY KEY,
-    gateway_id TEXT NOT NULL,
-    conversation_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_remote_conversation_links_conversation_id
-ON remote_conversation_links(conversation_id);
 """
 
 _DEFAULT_TITLE = "New Chat"
 
 
 def generate_conversation_title(text: str) -> str:
-    """The one production title-generation function — a deterministic,
-    technical truncation of the first user message, NOT a model decision
-    (see append_message's own comment on this). Extracted as a standalone
-    function so remote_gateway/remote_chat_service.py can compute the exact
-    same title Siena_v2 just assigned (to push it to the owning Android
-    device via conversation.title) without duplicating the logic or
-    re-deriving it differently."""
+    """Return a deterministic title from the first user message."""
     return " ".join(text.strip().split())[:40] or _DEFAULT_TITLE
 
 
@@ -149,7 +130,7 @@ class ConversationStore:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT c.id, c.title, c.created_at, c.updated_at,
+                    SELECT c.id, c.title, c.model_override, c.created_at, c.updated_at,
                         (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id = c.id) AS message_count,
                         (SELECT content FROM conversation_messages m
                             WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message
@@ -178,7 +159,7 @@ class ConversationStore:
         try:
             with self._connect() as conn:
                 conv_row = conn.execute(
-                    "SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?",
+                    "SELECT id, title, model_override, created_at, updated_at FROM conversations WHERE id = ?",
                     (conversation_id,),
                 ).fetchone()
                 if conv_row is None:
@@ -258,6 +239,7 @@ class ConversationStore:
         return {
             "id": conv_row["id"],
             "title": conv_row["title"],
+            "model_override": conv_row["model_override"],
             "created_at": conv_row["created_at"],
             "updated_at": conv_row["updated_at"],
             "messages": messages,
@@ -395,6 +377,18 @@ class ConversationStore:
         except sqlite3.Error as exc:
             raise SienaInfraError(f"Ошибка переименования разговора {conversation_id}: {exc}") from exc
 
+    def update_model_override(self, conversation_id: str, model: str | None) -> None:
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "UPDATE conversations SET model_override = ?, updated_at = ? WHERE id = ?",
+                    (model, _now_iso(), conversation_id),
+                )
+                if cursor.rowcount == 0:
+                    raise SienaInfraError(f"Разговор {conversation_id} не найден")
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Ошибка назначения модели разговору {conversation_id}: {exc}") from exc
+
     def delete_conversation(self, conversation_id: str) -> None:
         try:
             with self._connect() as conn:
@@ -455,45 +449,6 @@ class ConversationStore:
             "created_at": now,
             "metadata": metadata or {},
         }
-
-    # --- Remote (Siena Remote / Relay) conversation mapping ---
-
-    def get_remote_link(self, remote_conversation_id: str) -> dict[str, Any] | None:
-        """Looks up the internal conversation_id a phone's remote
-        conversation_id already maps to, if any. Never creates one — see
-        create_remote_link() for that."""
-        try:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT remote_conversation_id, gateway_id, conversation_id, created_at
-                    FROM remote_conversation_links WHERE remote_conversation_id = ?
-                    """,
-                    (remote_conversation_id,),
-                ).fetchone()
-        except sqlite3.Error as exc:
-            raise SienaInfraError(f"Ошибка чтения remote_conversation_links {remote_conversation_id}: {exc}") from exc
-        return dict(row) if row is not None else None
-
-    def create_remote_link(self, remote_conversation_id: str, gateway_id: str, conversation_id: str) -> None:
-        """Creates the mapping once. Idempotent: if a link for this
-        remote_conversation_id already exists (a race between two concurrent
-        first messages), the existing row wins and this is a no-op."""
-        now = _now_iso()
-        try:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO remote_conversation_links (
-                        remote_conversation_id, gateway_id, conversation_id, created_at
-                    )
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(remote_conversation_id) DO NOTHING
-                    """,
-                    (remote_conversation_id, gateway_id, conversation_id, now),
-                )
-        except sqlite3.Error as exc:
-            raise SienaInfraError(f"Ошибка записи remote_conversation_links {remote_conversation_id}: {exc}") from exc
 
     def append_event(self, conversation_id: str, event_type: str, payload: dict[str, Any]) -> None:
         event_id = str(uuid.uuid4())

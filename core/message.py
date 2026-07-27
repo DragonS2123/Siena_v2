@@ -51,7 +51,7 @@ class ToolResult:
     content: Any = None
     error: str | None = None
 
-    def to_message_content(self, name: str | None = None, args: dict | None = None) -> str:
+    def to_message_content(self, name: str | None = None, args: dict | None = None, tool_call_id: str | None = None) -> str:
         """Сериализация результата для отправки модели как содержимое tool-сообщения.
 
         name/args/timestamp — не решение о том, что "важно" (это по-прежнему
@@ -61,13 +61,13 @@ class ToolResult:
         раздел про research discipline)."""
         timestamp = datetime.now().astimezone().isoformat()
         if not self.ok:
-            payload = {"ok": False, "tool": name, "query": (args or {}).get("query"), "timestamp": timestamp, "error": self.error}
+            payload = {"ok": False, "response_type": "tool_result", "tool_call_id": tool_call_id, "tool": name, "query": (args or {}).get("query"), "timestamp": timestamp, "error": self.error}
             return json.dumps(payload, ensure_ascii=False)
 
         if _is_search_result_shaped(self.content):
             return _format_search_results(self.content, name, args, timestamp)
 
-        payload = {"ok": True, "tool": name, "timestamp": timestamp, "result": self.content}
+        payload = {"ok": True, "response_type": "tool_result", "tool_call_id": tool_call_id, "tool": name, "timestamp": timestamp, "result": self.content}
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -79,8 +79,8 @@ def user_message(content: str) -> dict:
     return {"role": "user", "content": content}
 
 
-def tool_message(name: str, result: ToolResult, args: dict | None = None) -> dict:
+def tool_message(name: str, result: ToolResult, args: dict | None = None, tool_call_id: str | None = None) -> dict:
     # Поле называется "tool_name", а не "name" — это единственное имя, которое
     # Ollama Message schema реально знает для tool-сообщений (проверено против
     # ollama._types.Message: "name" молча отбрасывается при валидации).
-    return {"role": "tool", "tool_name": name, "content": result.to_message_content(name=name, args=args)}
+    return {"role": "tool", "tool_name": name, "content": result.to_message_content(name=name, args=args, tool_call_id=tool_call_id)}

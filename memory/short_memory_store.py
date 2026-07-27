@@ -49,6 +49,9 @@ class ShortMemoryStore:
         except (OSError, json.JSONDecodeError) as exc:
             raise SienaInfraError(f"short_memory.json повреждён или недоступен: {exc}") from exc
 
+    def list(self) -> list[dict]:
+        return self._read()
+
     def _write(self, entries: list[dict]) -> None:
         tmp_path = self._path.with_suffix(".tmp")
         try:

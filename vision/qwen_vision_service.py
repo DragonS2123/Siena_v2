@@ -1,15 +1,4 @@
-"""Vision — image scene/object understanding via Ollama qwen2.5vl.
-
-Same technical-service role as ocr/glm_ocr_service.py and voice/ — this only
-turns pixels into a visual description, it does not decide when to call it
-or what the model does with the result afterward (see core/image_intent.py
-for the OCR-vs-vision intent split and api/server.py::_run_image_vision for
-the call site).
-
-OCR and vision are deliberately separate services and separate models: OCR
-(glm-ocr) reads TEXT, vision (qwen2.5vl) describes SCENE/OBJECTS. Neither is
-a substitute for the other, and this service never touches OCR's code path.
-"""
+"""Local image understanding through the model assigned to the vision role."""
 
 from __future__ import annotations
 
@@ -31,9 +20,7 @@ class VisionUnavailableError(Exception):
 
 
 class VisionModelNotInstalledError(VisionUnavailableError):
-    """config.IMAGE_UNDERSTANDING_MODEL is not present in Ollama's model
-    list. A distinct subclass so api/server.py can surface a specific "model
-    not installed" status instead of a generic vision failure."""
+    """The assigned vision model is not present in Ollama."""
 
 
 _DEFAULT_VISION_PROMPT = (
@@ -77,9 +64,7 @@ class QwenVisionService:
         Raises VisionModelNotInstalledError if the model isn't in Ollama, or
         VisionUnavailableError if the call itself fails — same split as
         OcrModelNotInstalledError/OcrUnavailableError: infrastructure
-        failures, not semantic ones. The caller (api/server.py) must catch
-        these and surface an honest "vision unavailable/failed" note instead
-        of crashing the chat turn."""
+        failures, not semantic ones."""
         if not self.is_available():
             raise VisionModelNotInstalledError(
                 f"Vision model {self._model!r} not found in Ollama ({self._host}). "

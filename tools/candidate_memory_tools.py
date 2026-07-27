@@ -7,7 +7,7 @@ Siena могла бы сама подтверждать свои кандида�
 участия человека, что убивает смысл human-in-the-loop в этой фиче.
 
 promote_candidate() ниже — обычная Python-функция, не Tool: её вызывает
-только REST-эндпоинт /api/insights/{id}/promote (api/server.py) в ответ на
+только REST-эндпоинт /api/insights/{id}/promote в ответ на
 явное действие человека в интерфейсе. reject/later не нуждаются в отдельном
 хелпере — это прямой store.set_status(...) в самом эндпоинте.
 """
@@ -131,7 +131,7 @@ def promote_candidate(candidate_store: CandidateMemoryStore, long_store: LongMem
     решает, стоит ли доверять кандидату — это решение уже принял человек,
     кликнув кнопку; Runtime лишь переносит уже одобренный текст в long_memory.
     Логирование candidate_memory_promoted/long_memory_saved — на вызывающей
-    стороне (api/server.py), т.к. у этой функции нет своего logger-контекста.
+    стороне API, т.к. у этой функции нет своего logger-контекста.
     """
     candidate = candidate_store.get(candidate_id)
     if candidate is None or candidate["status"] != "pending":

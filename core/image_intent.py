@@ -1,30 +1,4 @@
-"""Detects whether a user's message about an attached image is asking Siena
-to read text out of it (OCR) or to describe what it visually shows (vision
-— scene/object understanding), or both.
-
-This is a pure text-classification heuristic, same spirit as
-core/model_router.py's code/review pattern matching — Runtime doesn't decide
-what's "true" about the image, it only signals intent so api/server.py can
-route to the right technical service: ocr/glm_ocr_service.py for text
-extraction, vision/qwen_vision_service.py for visual description. Neither
-service is a substitute for the other, and this module never calls either
-one itself.
-
-Bugfix (HANDOFF_v2.md, "image routing order" pass): the original patterns
-required near-exact adjacency ("что на картинке" but NOT "что на ЭТОЙ
-картинке"), were missing "скриншот"/"скрин" as an image noun entirely, and
-were missing common verbs ("посмотри"/"взгляни"/"глянь"/"разбери"). Live
-trace showed a real user asking "Что на этом изображении?" — OCR ran,
-vision did not — confirmed reproducible: the old
-`что\\s+(тут|там|здесь)?\\s*изображ` pattern cannot match through the
-demonstrative "этом". Patterns below tolerate a short filler gap instead of
-requiring rigid adjacency. Also fixed: `decide_vision()` no longer suppresses
-vision just because OCR intent was ALSO detected in the same message (the
-old inline `wants_image_understanding(x) and not wants_ocr(x)` in
-api/server.py silently broke the "read the text AND describe the picture"
-case, since asking for both makes both conditions True and `and not` forces
-the whole expression False).
-"""
+"""Pure OCR-versus-vision intent classification for image attachments."""
 
 from __future__ import annotations
 
@@ -119,30 +93,11 @@ def _is_ambiguous_image_question(text: str) -> bool:
 @dataclass(frozen=True)
 class VisionDecision:
     run_vision: bool
-    # Informational only (not shown to the model as an excuse-generator —
-    # see api/server.py's use of this: it only ever drives whether the
-    # honest "vision unavailable" note is attached, never a running
-    # "here's why I skipped it" commentary for the ordinary case).
     reason: str  # "no_image" | "explicit_vision" | "explicit_both" | "ocr_only" | "ambiguous_fallback" | "no_intent"
 
 
 def decide_vision(text: str, has_image_attachment: bool) -> VisionDecision:
-    """Single source of truth for "should qwen2.5vl run this turn", replacing
-    the old ad-hoc `wants_image_understanding(x) and not wants_ocr(x)` that
-    used to live inline in api/server.py in two slightly different places.
-
-    OCR precedence rule: an OCR-only request never triggers vision. But if
-    BOTH are explicitly requested ("прочитай текст и опиши картинку"), both
-    must run — vision is only suppressed when OCR was asked for and vision
-    was NOT (the old code's `and not wants_ocr(text)` incorrectly suppressed
-    vision even when both were explicitly requested, since both conditions
-    being True made the `and not` collapse to False).
-
-    Ambiguous fallback: a short question with no explicit OCR/vision keyword
-    at all ("что это?", "посмотри") defaults to vision when an image is
-    actually attached — it's a visual question by construction; there is
-    nothing else it could reasonably mean given an attached photo.
-    """
+    """Choose vision for explicit or ambiguous visual requests with an image."""
     if not has_image_attachment:
         return VisionDecision(False, "no_image")
 

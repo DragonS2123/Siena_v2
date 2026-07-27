@@ -11,6 +11,8 @@ from core.ollama_client import OllamaClient
 from core.session import Session
 from logging_.logger import SienaLogger
 from tools.registry import ToolRegistry
+from uuid import uuid4
+import json
 
 _KEEP_KEYS = ("role", "content", "tool_calls")
 
@@ -35,6 +37,7 @@ def run(
     max_iterations: int,
     max_context_messages: int,
 ) -> str:
+    seen_tool_calls: set[str] = set()
     for iteration in range(1, max_iterations + 1):
         context_messages = session.get_context_messages(max_context_messages)
 
@@ -62,17 +65,21 @@ def run(
         content = message.get("content", "")
         done_reason = raw_response.get("done_reason")
 
-        # Полный сырой ответ Ollama — целиком, без урезания полей. Это основной
-        # источник диагностики того, "почему модель поступила именно так":
-        # видно content, tool_calls, thinking (если think=True), done/done_reason
-        # и timing-метрики за один шаг.
-        logger.event("ollama_raw_response", iteration=iteration, raw=raw_response)
+        logger.event(
+            "ollama_response",
+            iteration=iteration,
+            model=raw_response.get("model"),
+            done_reason=done_reason,
+            eval_count=raw_response.get("eval_count"),
+            content_length=len(content),
+            tool_call_count=len(tool_calls or []),
+        )
 
         logger.event(
             "model_response",
             iteration=iteration,
             has_tool_calls=bool(tool_calls),
-            content=content,
+            content_length=len(content),
             done_reason=done_reason,
             console_message=(
                 f"[Siena] думает... (итерация {iteration}, вызовов инструментов: {len(tool_calls) if tool_calls else 0}, done_reason={done_reason})"
@@ -95,7 +102,7 @@ def run(
                     ),
                     iteration=iteration,
                     done_reason=done_reason,
-                    raw_message=message,
+                    content_length=len(content),
                 )
             return content
 
@@ -103,26 +110,35 @@ def run(
             function = call.get("function", {})
             name = function.get("name")
             args = function.get("arguments") or {}
+            tool_call_id = call.get("id") or f"siena-{uuid4()}"
+            signature = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
 
             logger.event(
                 "tool_dispatch",
                 name=name,
-                args=args,
+                tool_call_id=tool_call_id,
+                argument_names=sorted(args),
                 console_message=f"  -> tool_call: {name}({args})",
             )
 
-            result = registry.dispatch(name, args)
+            if signature in seen_tool_calls:
+                from core.message import ToolResult
+                result = ToolResult(ok=False, error="duplicate_tool_call_blocked")
+            else:
+                seen_tool_calls.add(signature)
+                result = registry.dispatch(name, args, tool_call_id=tool_call_id)
 
             logger.event(
                 "tool_result",
                 name=name,
+                tool_call_id=tool_call_id,
                 ok=result.ok,
-                content=result.content,
+                result_type=type(result.content).__name__ if result.content is not None else None,
                 error=result.error,
                 console_message=f"  <- tool_result: {name} ok={result.ok}",
             )
 
-            session.add_tool_result(name, result, args)
+            session.add_tool_result(name, result, args, tool_call_id=tool_call_id)
 
     logger.error(
         "max_iterations_reached",

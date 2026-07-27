@@ -12,18 +12,38 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 
 _LEVEL_ORDER = {"debug": 10, "info": 20, "warn": 30, "error": 40}
 
 
+_SENSITIVE_KEYS = {"content", "text", "task", "raw", "raw_message", "args", "proposed_memory"}
+
+
+def _safe_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key in _SENSITIVE_KEYS:
+            safe[f"{key}_length"] = len(str(value)) if value is not None else 0
+        else:
+            safe[key] = value
+    return safe
+
+
 class SienaLogger:
-    def __init__(self, log_dir: Path, level: str = "info"):
+    def __init__(
+        self,
+        log_dir: Path,
+        level: str = "info",
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+    ):
         log_dir.mkdir(parents=True, exist_ok=True)
         date_tag = datetime.now().strftime("%Y%m%d")
         self._jsonl_path = log_dir / f"siena_{date_tag}.jsonl"
         self._level_value = _LEVEL_ORDER.get(level, _LEVEL_ORDER["info"])
+        self._event_sink = event_sink
 
         self._console = logging.getLogger("siena")
         self._console.setLevel(logging.DEBUG)
@@ -49,10 +69,12 @@ class SienaLogger:
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event_type,
-            **fields,
+            **_safe_fields(fields),
         }
         with self._jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if self._event_sink is not None:
+            self._event_sink(record)
 
         if console_message is not None and self._level_value <= _LEVEL_ORDER["info"]:
             self._console.info(console_message)
@@ -62,8 +84,10 @@ class SienaLogger:
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event_type,
             "level": "ERROR",
-            **fields,
+            **_safe_fields(fields),
         }
         with self._jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if self._event_sink is not None:
+            self._event_sink(record)
         self._console.error(console_message)

@@ -1,119 +1,31 @@
-"""Persistent settings store — survives a backend restart for the small
-subset of config.* fields that are actually wired to a live effect via
-POST /api/settings (Settings > Model section, see HANDOFF_v2.md). Everything
-else in the Settings UI (Appearance, Startup, Tools, Code, Voice, Developer)
-is still local-only and never reaches this file.
-
-Not a general key-value store: only PERSISTABLE_FIELDS are ever read or
-written, so nothing else (ollama_host, secrets, timeouts not exposed to the
-Settings UI) accidentally leaks onto disk. Atomic write via tmp-file +
-replace, same pattern as voice/voice_profiles.py.
-
-Runtime doesn't decide what these values should be — a human sets them via
-the Settings UI (POST /api/settings, api/server.py); this store only persists
-and reloads whatever was already explicitly applied.
-"""
+"""Atomic persistence and migration for user-facing Siena settings."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
-PERSISTABLE_FIELDS = (
-    "primary_model",
-    "code_model",
+from config import DEFAULT_MODEL_ROLES
+
+PERSISTABLE_FIELDS = {
+    "model_roles",
     "max_context_messages",
     "num_ctx",
     "num_predict",
     "request_timeout_seconds",
-    "log_level",
-    # Settings unfreeze pass (HANDOFF_v2.md) — simple boolean feature flags
-    # and the STT default language, all of which config.py/api/server.py
-    # already read live at call time (same "no restart needed" discipline
-    # as log_level above). keep_alive/model-lifecycle fields are
-    # deliberately NOT here — out of scope for this pass.
-    "enable_ocr",
-    "enable_image_understanding",
-    "enable_translator",
-    "enable_code_specialist_auto",
-    "enable_reviewer_explicit",
     "stt_language",
-    # Settings Pass 2 — pure frontend UI/display preferences. The backend
-    # has no behavioral use for any of these; they're persisted purely so
-    # they survive a restart, same discipline as everything else here.
+    "tts_provider",
+    "interface_language",
     "appearance_theme",
-    "accent_color",
     "ui_font_size",
     "ui_density",
     "show_message_timestamps",
     "show_typing_animation",
-    "copy_before_clear_chat",
     "startup_page",
-    "code_font_size",
-    "code_line_wrap",
-    # Settings Pass 3 — remaining code-display visibility toggles + the
-    # experimental Stream-button visibility toggle (both pure frontend, no
-    # backend behavior) and the one real addition: a soft chat-prompt
-    # language preference (see config.py's own comment on this field).
-    "code_syntax_highlighting",
-    "code_show_line_numbers",
-    "code_show_language_badge",
-    "code_show_copy_button",
-    "code_show_collapse_button",
-    "code_show_save_button",
-    "show_experimental_stream_button",
-    "preferred_response_language",
-    # Real UI localization pass — application UI language, separate from
-    # stt_language/preferred_response_language above (see config.py).
-    "interface_language",
-    # Presence layer (0.2.1, Phase 1) — presence/presence_service.py reads
-    # these live via config.*, same "no restart needed" discipline as
-    # log_level. allow_proactive_presence_messages defaults False for safety
-    # (see config.py's own comment on this field).
-    "enable_presence",
-    "allow_proactive_presence_messages",
-    "presence_idle_minutes",
-    "presence_max_messages_per_hour",
-    "presence_quiet_hours_enabled",
-    "presence_quiet_hours_start",
-    "presence_quiet_hours_end",
-    "presence_style",
-    "show_presence_card",
-    # Presence Behavior Layer (0.2.1, Phase 2) — welcome-back/recent-event/
-    # insert-to-composer behavior gates, same live-read discipline as the
-    # Phase 1 presence fields above.
-    "presence_show_welcome_back",
-    "presence_show_recent_event",
-    "presence_allow_insert_to_chat",
-    "presence_min_seconds_between_ui_messages",
-    # Desktop Presence Shell (0.2.2) — consumed by the Electron main process
-    # (electron/main.cjs reads storage/settings.json directly); the backend
-    # only stores/validates/echoes them.
-    "enable_tray_icon",
-    "minimize_to_tray",
-    "close_to_tray",
-    "show_tray_notifications",
-    "auto_start_backend_with_desktop",
-    # Computer Awareness Layer (0.2.3, Phase 1) — read-only computer state
-    # (computer/). allow_active_window_title defaults False for privacy.
-    "enable_computer_awareness",
-    "show_computer_status_card",
-    "computer_status_poll_seconds",
-    "allow_active_window_title",
-    "allow_process_list",
-    "allow_disk_status",
-    "allow_network_status",
-    "allow_computer_context_in_chat",
-    "computer_warning_cpu_percent",
-    "computer_warning_ram_percent",
-    "computer_warning_vram_percent",
-    "computer_warning_disk_free_gb",
-    # Siena Remote Presence (0.2.3, remote_gateway/) — ONLY the enable flag.
-    # The gateway token deliberately never touches this file: it lives in a
-    # Windows-DPAPI-encrypted store (remote_gateway/credentials.py).
-    "remote_gateway_enabled",
-)
+    "log_level",
+}
 
 
 class SettingsStore:
@@ -121,41 +33,57 @@ class SettingsStore:
         self._path = path
 
     def load(self) -> tuple[dict[str, Any], str | None]:
-        """Returns (values, error). `values` is always a dict filtered to
-        PERSISTABLE_FIELDS — never raises. A missing file is not an error
-        (nothing persisted yet); a corrupt/unreadable file returns an empty
-        dict plus an error string for the caller to log as
-        settings_load_failed, so a broken settings.json can never prevent
-        the backend from starting."""
         if not self._path.exists():
             return {}, None
         try:
-            # utf-8-sig transparently strips a leading UTF-8 BOM if present
-            # (e.g. a human editing settings.json in Notepad, which writes
-            # "UTF-8" as UTF-8-with-BOM by default) and behaves identically
-            # to plain utf-8 when there's no BOM — json.loads() otherwise
-            # rejects a BOM'd file outright (it's not valid JSON syntax),
-            # which used to surface as a spurious settings_load_failed.
             raw = self._path.read_text(encoding="utf-8-sig")
             data = json.loads(raw) if raw.strip() else {}
         except (OSError, json.JSONDecodeError) as exc:
             return {}, str(exc)
-
         if not isinstance(data, dict):
-            return {}, "top-level value in settings.json is not a JSON object"
+            return {}, "settings root must be an object"
+        return {key: value for key, value in data.items() if key in PERSISTABLE_FIELDS}, None
 
-        return {k: v for k, v in data.items() if k in PERSISTABLE_FIELDS and v is not None}, None
+    def migrate(self) -> dict[str, Any]:
+        """Translate legacy model choices and drop obsolete keys after backup."""
+        if not self._path.exists():
+            return {}
+        raw = self._path.read_text(encoding="utf-8-sig")
+        data = json.loads(raw) if raw.strip() else {}
+        if not isinstance(data, dict):
+            return {}
+        cleaned = {key: value for key, value in data.items() if key in PERSISTABLE_FIELDS}
+        if not isinstance(cleaned.get("model_roles"), dict):
+            roles = dict(DEFAULT_MODEL_ROLES)
+            primary = data.get("primary_model")
+            coder = data.get("code_model")
+            if isinstance(primary, str) and primary.strip():
+                roles["chat"] = primary
+                roles["memory"] = primary
+            if isinstance(coder, str) and coder.strip():
+                roles["coder"] = coder
+            cleaned["model_roles"] = roles
+        else:
+            aliases = {"glm-ocr": "glm-ocr:latest", "qwen2.5vl": "qwen2.5vl:latest"}
+            cleaned["model_roles"] = {
+                role: aliases.get(model, model)
+                for role, model in cleaned["model_roles"].items()
+            }
+        if cleaned != data:
+            backup = self._path.with_suffix(".pre-core-cleanup.bak")
+            if not backup.exists():
+                shutil.copy2(self._path, backup)
+            self._write(cleaned)
+        return cleaned
 
-    def save(self, values: dict[str, Any]) -> None:
-        """Merges `values` into whatever is currently on disk (filtered to
-        PERSISTABLE_FIELDS) and writes it back atomically. Raises OSError on
-        write failure — the caller (api/server.py) treats persistence as
-        best-effort and logs settings_save_failed rather than undoing an
-        already-applied runtime change."""
+    def save(self, values: dict[str, Any]) -> dict[str, Any]:
         current, _ = self.load()
-        current.update({k: v for k, v in values.items() if k in PERSISTABLE_FIELDS and v is not None})
+        current.update({key: value for key, value in values.items() if key in PERSISTABLE_FIELDS})
+        self._write(current)
+        return current
 
+    def _write(self, values: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self._path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(self._path)
+        temporary = self._path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self._path)

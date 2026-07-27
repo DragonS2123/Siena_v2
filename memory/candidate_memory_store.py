@@ -8,7 +8,7 @@ candidate_memory_create (см. tools/candidate_memory_tools.py); здесь он
 только сохраняются и отдаются обратно, без какой-либо интерпретации.
 
 Human-in-the-loop: promote/reject/later/delete — не tools модели, а
-REST-эндпоинты /api/insights/* (api/server.py), вызываемые явным действием
+REST-эндпоинты /api/insights/*, вызываемые явным действием
 человека в интерфейсе Insights. Store здесь только исполняет CRUD по статусу.
 """
 

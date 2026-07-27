@@ -17,8 +17,8 @@ class Session:
         """Добавляет сырое сообщение ассистента, как его вернул Ollama (включая tool_calls)."""
         self.messages.append(message)
 
-    def add_tool_result(self, name: str, result: ToolResult, args: dict | None = None) -> None:
-        self.messages.append(tool_message(name, result, args))
+    def add_tool_result(self, name: str, result: ToolResult, args: dict | None = None, tool_call_id: str | None = None) -> None:
+        self.messages.append(tool_message(name, result, args, tool_call_id=tool_call_id))
 
     def get_messages(self) -> list[dict]:
         return self.messages

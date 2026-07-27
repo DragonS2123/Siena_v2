@@ -27,7 +27,7 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools.keys())
 
-    def dispatch(self, name: str, args: dict) -> ToolResult:
+    def dispatch(self, name: str, args: dict, *, tool_call_id: str | None = None) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(ok=False, error=f"Unknown tool: {name}")
@@ -40,7 +40,8 @@ class ToolRegistry:
             )
 
         try:
-            return tool.run(**args)
+            contextual = getattr(tool, "run_with_context", None)
+            return contextual(tool_call_id, args) if contextual else tool.run(**args)
         except SienaToolError as exc:
             return ToolResult(ok=False, error=str(exc))
         except SienaInfraError:

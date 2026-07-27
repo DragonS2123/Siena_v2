@@ -1,23 +1,7 @@
-"""Deterministic user-memory context — surfaces confirmed high-importance
-long-term facts (e.g. the user's name) into EVERY chat turn, desktop and
-remote alike, WITHOUT depending on the model spontaneously choosing to call
-long_memory_search.
+"""Surface confirmed high-importance facts in each local chat turn.
 
-Why this exists: run_chat_turn (api/server.py) is the one shared pipeline
-both desktop and remote (Android) chat use, and both already carry the soft
-SYSTEM_PROMPT instruction "check long_memory before replying" — but remote
-turns rebuild a cold, empty Session on every message (see
-remote_gateway/remote_chat_service.py), so the model has much less
-"momentum" to spontaneously honor that soft instruction than an
-already-warmed-up desktop conversation. This module is a hard, deterministic
-supplement, not a replacement — the model can still call long_memory_search
-itself for anything not covered here (older/lower-importance facts, fuzzy
-recall, etc.).
-
-Nothing here is a semantic judgment: which facts are "important" was already
-decided by the model at save time (long_memory_save's importance="high"
-argument) — this module only deterministically re-surfaces what was already
-marked, on every turn, the same way for every caller.
+The model can still search memory for facts outside this compact context.
+Only facts previously marked important are included.
 """
 
 from __future__ import annotations
