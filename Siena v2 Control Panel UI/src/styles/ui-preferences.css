@@ -1,0 +1,207 @@
+/* Settings Pass 2 — UI preference infrastructure.
+ *
+ * App.tsx renders almost entirely with Tailwind arbitrary-value literals
+ * (e.g. bg-[#1e1b18]) rather than the semantic tokens in theme.css, so this
+ * file works by overriding those SAME generated classes via attribute
+ * selectors scoped to document.documentElement's data-* attributes
+ * (UiPreferencesProvider sets these). No JSX/className changes required,
+ * and the default state (data-theme="dark" data-accent="sienna"
+ * data-font-size="default" data-density="comfortable") matches zero rules
+ * below, so the current look is the untouched baseline.
+ *
+ * Selector specificity ([attr] + .class = 0,2,0) beats the plain utility
+ * class (0,1,0) regardless of CSS import order, so this is safe to import
+ * anywhere after tailwind.css.
+ */
+
+/* ---------- Font size (zoom-based: most text uses absolute px sizes that
+   don't respond to root font-size, so rem scaling wouldn't reach them). ---------- */
+:root[data-font-size="small"] {
+  zoom: 0.9;
+}
+:root[data-font-size="large"] {
+  zoom: 1.125;
+}
+
+/* ---------- Density / compact mode — reduces the most common padding/gap
+   utilities slightly. Comfortable (default) applies none of this. ---------- */
+:root[data-density="compact"] .px-4 { padding-left: 0.75rem; padding-right: 0.75rem; }
+:root[data-density="compact"] .px-3 { padding-left: 0.5rem; padding-right: 0.5rem; }
+:root[data-density="compact"] .px-2\.5 { padding-left: 0.4rem; padding-right: 0.4rem; }
+:root[data-density="compact"] .px-2 { padding-left: 0.35rem; padding-right: 0.35rem; }
+:root[data-density="compact"] .py-3 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+:root[data-density="compact"] .py-2\.5 { padding-top: 0.4rem; padding-bottom: 0.4rem; }
+:root[data-density="compact"] .py-2 { padding-top: 0.35rem; padding-bottom: 0.35rem; }
+:root[data-density="compact"] .py-1\.5 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+:root[data-density="compact"] .py-1 { padding-top: 0.15rem; padding-bottom: 0.15rem; }
+:root[data-density="compact"] .py-8 { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+:root[data-density="compact"] .gap-3 { gap: 0.5rem; }
+:root[data-density="compact"] .gap-2\.5 { gap: 0.4rem; }
+:root[data-density="compact"] .gap-2 { gap: 0.35rem; }
+:root[data-density="compact"] .gap-1\.5 { gap: 0.25rem; }
+:root[data-density="compact"] .gap-1 { gap: 0.15rem; }
+:root[data-density="compact"] .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.5rem; }
+:root[data-density="compact"] .space-y-2 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.35rem; }
+:root[data-density="compact"] .space-y-1\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.25rem; }
+
+/* ---------- Light theme — usable/readable, not a pixel-perfect redesign.
+   Dominant literals only (by usage frequency in App.tsx); rare one-off
+   status-color accents are left as-is since they stay legible on white. ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Backgrounds (dark -> light) */
+:root[data-theme="light"] .bg-\[\#1a1714\] { background-color: #faf7f2; }
+:root[data-theme="light"] .bg-\[\#1e1b18\] { background-color: #f5f0e8; }
+:root[data-theme="light"] .bg-\[\#141210\] { background-color: #efe9df; }
+:root[data-theme="light"] .bg-\[\#181512\] { background-color: #f2ede4; }
+:root[data-theme="light"] .bg-\[\#0f0e0c\] { background-color: #eae3d6; }
+:root[data-theme="light"] .bg-\[\#2a2520\] { background-color: #ece4d7; }
+:root[data-theme="light"] .bg-\[\#252118\] { background-color: #ece4d7; }
+:root[data-theme="light"] .bg-\[\#221e1b\] { background-color: #ffffff; }
+
+/* Foreground / text (light-on-dark -> dark-on-light) */
+:root[data-theme="light"] .text-\[\#f0ebe3\] { color: #2a2420; }
+:root[data-theme="light"] .text-\[\#c8c0b7\] { color: #4d443c; }
+:root[data-theme="light"] .text-\[\#8a7f75\] { color: #746a60; }
+:root[data-theme="light"] .text-\[\#4b4540\] { color: #b6ada3; }
+:root[data-theme="light"] .text-\[\#3a342e\] { color: #e4ddd2; }
+:root[data-theme="light"] .text-\[\#a89f96\] { color: #8a8078; }
+:root[data-theme="light"] .text-\[\#d8d0c7\] { color: #55493f; }
+:root[data-theme="light"] .text-\[\#2e2a26\] { color: #ece4d7; }
+
+/* Borders / overlays (white-alpha -> black-alpha of similar visual weight) */
+:root[data-theme="light"] .border-white\/\[0\.05\] { border-color: rgba(0,0,0,0.07); }
+:root[data-theme="light"] .border-white\/\[0\.06\] { border-color: rgba(0,0,0,0.08); }
+:root[data-theme="light"] .border-white\/\[0\.07\] { border-color: rgba(0,0,0,0.09); }
+:root[data-theme="light"] .border-white\/\[0\.08\] { border-color: rgba(0,0,0,0.10); }
+:root[data-theme="light"] .border-white\/\[0\.1\] { border-color: rgba(0,0,0,0.12); }
+:root[data-theme="light"] .border-white\/10 { border-color: rgba(0,0,0,0.12); }
+:root[data-theme="light"] .border-white\/15 { border-color: rgba(0,0,0,0.15); }
+:root[data-theme="light"] .border-white\/20 { border-color: rgba(0,0,0,0.18); }
+:root[data-theme="light"] .border-white\/30 { border-color: rgba(0,0,0,0.25); }
+:root[data-theme="light"] .bg-white\/\[0\.02\] { background-color: rgba(0,0,0,0.04); }
+:root[data-theme="light"] .bg-white\/\[0\.04\] { background-color: rgba(0,0,0,0.05); }
+:root[data-theme="light"] .bg-white\/\[0\.05\] { background-color: rgba(0,0,0,0.06); }
+:root[data-theme="light"] .bg-white\/\[0\.06\] { background-color: rgba(0,0,0,0.07); }
+:root[data-theme="light"] .bg-white\/\[0\.07\] { background-color: rgba(0,0,0,0.08); }
+:root[data-theme="light"] .bg-white\/\[0\.1\] { background-color: rgba(0,0,0,0.10); }
+:root[data-theme="light"] .ring-white\/25 { --tw-ring-color: rgba(0,0,0,0.20); }
+
+/* ---------- Accent color — only the 5 already-visible swatches (Appearance
+   > Accent color). Default "sienna" applies zero rules (matches the current
+   #c4644a look exactly). Gradient/darker-shade decorative stops used for a
+   handful of one-off gradients are intentionally left as sienna — small,
+   low-frequency decorative detail, not a functional accent surface. ---------- */
+:root[data-accent="slate"] .bg-\[\#c4644a\] { background-color: #64748b; }
+:root[data-accent="slate"] .text-\[\#c4644a\] { color: #64748b; }
+:root[data-accent="slate"] .border-\[\#c4644a\] { border-color: #64748b; }
+:root[data-accent="slate"] .ring-\[\#c4644a\] { --tw-ring-color: #64748b; }
+:root[data-accent="slate"] .accent-\[\#c4644a\] { accent-color: #64748b; }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/04 { background-color: rgba(100,116,139,0.04); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/10 { background-color: rgba(100,116,139,0.10); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/12 { background-color: rgba(100,116,139,0.12); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/15 { background-color: rgba(100,116,139,0.15); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/18 { background-color: rgba(100,116,139,0.18); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/20 { background-color: rgba(100,116,139,0.20); }
+:root[data-accent="slate"] .bg-\[\#c4644a\]\/22 { background-color: rgba(100,116,139,0.22); }
+:root[data-accent="slate"] .border-\[\#c4644a\]\/18 { border-color: rgba(100,116,139,0.18); }
+:root[data-accent="slate"] .border-\[\#c4644a\]\/20 { border-color: rgba(100,116,139,0.20); }
+:root[data-accent="slate"] .border-\[\#c4644a\]\/25 { border-color: rgba(100,116,139,0.25); }
+:root[data-accent="slate"] .border-\[\#c4644a\]\/28 { border-color: rgba(100,116,139,0.28); }
+:root[data-accent="slate"] .border-\[\#c4644a\]\/30 { border-color: rgba(100,116,139,0.30); }
+:root[data-accent="slate"] .ring-\[\#c4644a\]\/08 { --tw-ring-color: rgba(100,116,139,0.08); }
+:root[data-accent="slate"] .hover\:bg-\[\#c4644a\]\/10:hover { background-color: rgba(100,116,139,0.10); }
+:root[data-accent="slate"] .hover\:bg-\[\#c4644a\]\/18:hover { background-color: rgba(100,116,139,0.18); }
+:root[data-accent="slate"] .hover\:bg-\[\#c4644a\]\/22:hover { background-color: rgba(100,116,139,0.22); }
+:root[data-accent="slate"] .hover\:bg-\[\#c4644a\]\/04:hover { background-color: rgba(100,116,139,0.04); }
+:root[data-accent="slate"] .hover\:text-\[\#c4644a\]:hover { color: #64748b; }
+:root[data-accent="slate"] .hover\:border-\[\#c4644a\]\/25:hover { border-color: rgba(100,116,139,0.25); }
+:root[data-accent="slate"] .hover\:border-\[\#c4644a\]\/30:hover { border-color: rgba(100,116,139,0.30); }
+:root[data-accent="slate"] .focus-within\:ring-\[\#c4644a\]\/08:focus-within { --tw-ring-color: rgba(100,116,139,0.08); }
+:root[data-accent="slate"] .focus-within\:border-\[\#c4644a\]\/28:focus-within { border-color: rgba(100,116,139,0.28); }
+
+:root[data-accent="forest"] .bg-\[\#c4644a\] { background-color: #4a7c59; }
+:root[data-accent="forest"] .text-\[\#c4644a\] { color: #4a7c59; }
+:root[data-accent="forest"] .border-\[\#c4644a\] { border-color: #4a7c59; }
+:root[data-accent="forest"] .ring-\[\#c4644a\] { --tw-ring-color: #4a7c59; }
+:root[data-accent="forest"] .accent-\[\#c4644a\] { accent-color: #4a7c59; }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/04 { background-color: rgba(74,124,89,0.04); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/10 { background-color: rgba(74,124,89,0.10); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/12 { background-color: rgba(74,124,89,0.12); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/15 { background-color: rgba(74,124,89,0.15); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/18 { background-color: rgba(74,124,89,0.18); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/20 { background-color: rgba(74,124,89,0.20); }
+:root[data-accent="forest"] .bg-\[\#c4644a\]\/22 { background-color: rgba(74,124,89,0.22); }
+:root[data-accent="forest"] .border-\[\#c4644a\]\/18 { border-color: rgba(74,124,89,0.18); }
+:root[data-accent="forest"] .border-\[\#c4644a\]\/20 { border-color: rgba(74,124,89,0.20); }
+:root[data-accent="forest"] .border-\[\#c4644a\]\/25 { border-color: rgba(74,124,89,0.25); }
+:root[data-accent="forest"] .border-\[\#c4644a\]\/28 { border-color: rgba(74,124,89,0.28); }
+:root[data-accent="forest"] .border-\[\#c4644a\]\/30 { border-color: rgba(74,124,89,0.30); }
+:root[data-accent="forest"] .ring-\[\#c4644a\]\/08 { --tw-ring-color: rgba(74,124,89,0.08); }
+:root[data-accent="forest"] .hover\:bg-\[\#c4644a\]\/10:hover { background-color: rgba(74,124,89,0.10); }
+:root[data-accent="forest"] .hover\:bg-\[\#c4644a\]\/18:hover { background-color: rgba(74,124,89,0.18); }
+:root[data-accent="forest"] .hover\:bg-\[\#c4644a\]\/22:hover { background-color: rgba(74,124,89,0.22); }
+:root[data-accent="forest"] .hover\:bg-\[\#c4644a\]\/04:hover { background-color: rgba(74,124,89,0.04); }
+:root[data-accent="forest"] .hover\:text-\[\#c4644a\]:hover { color: #4a7c59; }
+:root[data-accent="forest"] .hover\:border-\[\#c4644a\]\/25:hover { border-color: rgba(74,124,89,0.25); }
+:root[data-accent="forest"] .hover\:border-\[\#c4644a\]\/30:hover { border-color: rgba(74,124,89,0.30); }
+:root[data-accent="forest"] .focus-within\:ring-\[\#c4644a\]\/08:focus-within { --tw-ring-color: rgba(74,124,89,0.08); }
+:root[data-accent="forest"] .focus-within\:border-\[\#c4644a\]\/28:focus-within { border-color: rgba(74,124,89,0.28); }
+
+:root[data-accent="amber"] .bg-\[\#c4644a\] { background-color: #b45309; }
+:root[data-accent="amber"] .text-\[\#c4644a\] { color: #b45309; }
+:root[data-accent="amber"] .border-\[\#c4644a\] { border-color: #b45309; }
+:root[data-accent="amber"] .ring-\[\#c4644a\] { --tw-ring-color: #b45309; }
+:root[data-accent="amber"] .accent-\[\#c4644a\] { accent-color: #b45309; }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/04 { background-color: rgba(180,83,9,0.04); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/10 { background-color: rgba(180,83,9,0.10); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/12 { background-color: rgba(180,83,9,0.12); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/15 { background-color: rgba(180,83,9,0.15); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/18 { background-color: rgba(180,83,9,0.18); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/20 { background-color: rgba(180,83,9,0.20); }
+:root[data-accent="amber"] .bg-\[\#c4644a\]\/22 { background-color: rgba(180,83,9,0.22); }
+:root[data-accent="amber"] .border-\[\#c4644a\]\/18 { border-color: rgba(180,83,9,0.18); }
+:root[data-accent="amber"] .border-\[\#c4644a\]\/20 { border-color: rgba(180,83,9,0.20); }
+:root[data-accent="amber"] .border-\[\#c4644a\]\/25 { border-color: rgba(180,83,9,0.25); }
+:root[data-accent="amber"] .border-\[\#c4644a\]\/28 { border-color: rgba(180,83,9,0.28); }
+:root[data-accent="amber"] .border-\[\#c4644a\]\/30 { border-color: rgba(180,83,9,0.30); }
+:root[data-accent="amber"] .ring-\[\#c4644a\]\/08 { --tw-ring-color: rgba(180,83,9,0.08); }
+:root[data-accent="amber"] .hover\:bg-\[\#c4644a\]\/10:hover { background-color: rgba(180,83,9,0.10); }
+:root[data-accent="amber"] .hover\:bg-\[\#c4644a\]\/18:hover { background-color: rgba(180,83,9,0.18); }
+:root[data-accent="amber"] .hover\:bg-\[\#c4644a\]\/22:hover { background-color: rgba(180,83,9,0.22); }
+:root[data-accent="amber"] .hover\:bg-\[\#c4644a\]\/04:hover { background-color: rgba(180,83,9,0.04); }
+:root[data-accent="amber"] .hover\:text-\[\#c4644a\]:hover { color: #b45309; }
+:root[data-accent="amber"] .hover\:border-\[\#c4644a\]\/25:hover { border-color: rgba(180,83,9,0.25); }
+:root[data-accent="amber"] .hover\:border-\[\#c4644a\]\/30:hover { border-color: rgba(180,83,9,0.30); }
+:root[data-accent="amber"] .focus-within\:ring-\[\#c4644a\]\/08:focus-within { --tw-ring-color: rgba(180,83,9,0.08); }
+:root[data-accent="amber"] .focus-within\:border-\[\#c4644a\]\/28:focus-within { border-color: rgba(180,83,9,0.28); }
+
+:root[data-accent="violet"] .bg-\[\#c4644a\] { background-color: #7c3aed; }
+:root[data-accent="violet"] .text-\[\#c4644a\] { color: #7c3aed; }
+:root[data-accent="violet"] .border-\[\#c4644a\] { border-color: #7c3aed; }
+:root[data-accent="violet"] .ring-\[\#c4644a\] { --tw-ring-color: #7c3aed; }
+:root[data-accent="violet"] .accent-\[\#c4644a\] { accent-color: #7c3aed; }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/04 { background-color: rgba(124,58,237,0.04); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/10 { background-color: rgba(124,58,237,0.10); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/12 { background-color: rgba(124,58,237,0.12); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/15 { background-color: rgba(124,58,237,0.15); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/18 { background-color: rgba(124,58,237,0.18); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/20 { background-color: rgba(124,58,237,0.20); }
+:root[data-accent="violet"] .bg-\[\#c4644a\]\/22 { background-color: rgba(124,58,237,0.22); }
+:root[data-accent="violet"] .border-\[\#c4644a\]\/18 { border-color: rgba(124,58,237,0.18); }
+:root[data-accent="violet"] .border-\[\#c4644a\]\/20 { border-color: rgba(124,58,237,0.20); }
+:root[data-accent="violet"] .border-\[\#c4644a\]\/25 { border-color: rgba(124,58,237,0.25); }
+:root[data-accent="violet"] .border-\[\#c4644a\]\/28 { border-color: rgba(124,58,237,0.28); }
+:root[data-accent="violet"] .border-\[\#c4644a\]\/30 { border-color: rgba(124,58,237,0.30); }
+:root[data-accent="violet"] .ring-\[\#c4644a\]\/08 { --tw-ring-color: rgba(124,58,237,0.08); }
+:root[data-accent="violet"] .hover\:bg-\[\#c4644a\]\/10:hover { background-color: rgba(124,58,237,0.10); }
+:root[data-accent="violet"] .hover\:bg-\[\#c4644a\]\/18:hover { background-color: rgba(124,58,237,0.18); }
+:root[data-accent="violet"] .hover\:bg-\[\#c4644a\]\/22:hover { background-color: rgba(124,58,237,0.22); }
+:root[data-accent="violet"] .hover\:bg-\[\#c4644a\]\/04:hover { background-color: rgba(124,58,237,0.04); }
+:root[data-accent="violet"] .hover\:text-\[\#c4644a\]:hover { color: #7c3aed; }
+:root[data-accent="violet"] .hover\:border-\[\#c4644a\]\/25:hover { border-color: rgba(124,58,237,0.25); }
+:root[data-accent="violet"] .hover\:border-\[\#c4644a\]\/30:hover { border-color: rgba(124,58,237,0.30); }
+:root[data-accent="violet"] .focus-within\:ring-\[\#c4644a\]\/08:focus-within { --tw-ring-color: rgba(124,58,237,0.08); }
+:root[data-accent="violet"] .focus-within\:border-\[\#c4644a\]\/28:focus-within { border-color: rgba(124,58,237,0.28); }
