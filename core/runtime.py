@@ -62,6 +62,9 @@ def create_runtime() -> Runtime:
     roles = ModelRoles(settings)
     catalog = ModelCatalog(config.OLLAMA_HOST)
     conversations = ConversationStore(config.CONVERSATIONS_DB_PATH, config.CONVERSATION_EVENTS_DEFAULT_LIMIT)
+    recovered_streams = conversations.recover_interrupted_messages()
+    if recovered_streams:
+        logger.event("stream_messages_recovered", count=recovered_streams)
 
     def installed() -> set[str]:
         return {item["name"] for item in catalog.refresh().get("models", [])}

@@ -47,11 +47,17 @@ const FRONTEND_DEFAULTS: Partial<SettingsPayload> = {
   interface_language: "en",
   code_num_predict: 4096,
   code_request_timeout_seconds: 300,
+  auto_continue_on_length: true,
+  max_auto_continuations: 3,
+  max_total_generation_tokens: 16384,
+  continuation_overlap_window_chars: 4000,
+  thinking_display: "collapse_after_answer",
 };
 
 const PERSISTED_SETTINGS = new Set([
   "max_context_messages", "num_ctx", "num_predict", "code_num_predict",
-  "request_timeout_seconds", "code_request_timeout_seconds",
+  "request_timeout_seconds", "code_request_timeout_seconds", "auto_continue_on_length",
+  "max_auto_continuations", "max_total_generation_tokens", "continuation_overlap_window_chars", "thinking_display",
   "stt_language", "tts_provider", "interface_language", "appearance_theme",
   "ui_font_size", "ui_density", "show_message_timestamps",
   "show_typing_animation", "startup_page", "log_level",
@@ -202,6 +208,25 @@ export const sienaClient = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  openChatStream: async (
+    message: string,
+    attachments: ChatAttachmentPayload[] = [],
+    conversationId?: string | null,
+    signal?: AbortSignal,
+  ): Promise<Response> => {
+    const response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, conversation_id: conversationId ?? activeConversationId, attachments }),
+      signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new SienaApiError(response.status, detail || response.statusText);
+    }
+    if (!response.body) throw new SienaApiError(0, "Streaming response has no body");
+    return response;
+  },
   sendChatMessage: (message: string, attachments: ChatAttachmentPayload[] = [], conversationId?: string | null) =>
     request<ChatResponse>("/api/chat", {
       method: "POST",

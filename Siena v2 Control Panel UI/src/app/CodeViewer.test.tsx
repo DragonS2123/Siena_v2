@@ -169,14 +169,31 @@ describe("assistant Markdown → original Code Viewer mapping", () => {
     expect(document.body.textContent).not.toContain("```python");
   });
 
-  it("upgrades an unfinished streaming fence after the closing fence arrives", () => {
+  it("upgrades the same unfinished streaming viewer after the closing fence arrives", () => {
     const view = render(<MessageCodeContent content={"```python\nprint('streaming')"} />);
-    expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "true");
+    const originalViewer = screen.getByTestId("code-viewer");
+    expect(originalViewer).toHaveAttribute("data-incomplete", "true");
     view.rerender(<MessageCodeContent content={"```python\nprint('streaming')\n```"} />);
+    expect(screen.getByTestId("code-viewer")).toBe(originalViewer);
     expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-language", "python");
     expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "false");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("```");
+  });
+
+  it("Copy and Save expose partial code while a stream is incomplete", async () => {
+    const saveCodeFile = vi.fn().mockResolvedValue({ saved: true, canceled: false });
+    window.sienaDesktop = {
+      minimize: vi.fn(), toggleMaximize: vi.fn(), close: vi.fn(), isMaximized: vi.fn(),
+      onMaximizedChange: vi.fn(), saveCodeFile,
+    };
+    assistant("```html\n<div>partial</div>");
+    fireEvent.click(screen.getByRole("button", { name: "copy" }));
+    fireEvent.click(screen.getByRole("button", { name: "save" }));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("<div>partial</div>");
+      expect(saveCodeFile).toHaveBeenCalledWith(expect.objectContaining({ content: "<div>partial</div>" }));
+    });
   });
 
   it("renders a 500-line closed HTML fence without truncation", async () => {

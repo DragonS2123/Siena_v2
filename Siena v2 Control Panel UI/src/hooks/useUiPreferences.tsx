@@ -11,6 +11,7 @@ export type UiDensity = "comfortable" | "compact";
 export type StartupPage = "chat" | "runtime" | "settings";
 export type CodeFontSize = "small" | "default" | "large";
 export type PreferredResponseLanguage = "auto" | "ru" | "en";
+export type ThinkingDisplay = "always" | "collapse_after_answer" | "hidden";
 
 export interface UiPreferences {
   appearanceTheme: AppearanceTheme;
@@ -30,6 +31,7 @@ export interface UiPreferences {
   codeShowCollapseButton: boolean;
   codeShowSaveButton: boolean;
   preferredResponseLanguage: PreferredResponseLanguage;
+  thinkingDisplay: ThinkingDisplay;
   /** Application UI language — separate from stt_language (voice input) and
    * preferredResponseLanguage (soft model reply preference) above. */
   interfaceLanguage: Locale;
@@ -53,6 +55,7 @@ const DEFAULT_PREFS: UiPreferences = {
   codeShowCollapseButton: true,
   codeShowSaveButton: true,
   preferredResponseLanguage: "auto",
+  thinkingDisplay: "collapse_after_answer",
   interfaceLanguage: DEFAULT_LOCALE,
 };
 
@@ -131,6 +134,7 @@ function fromSettingsPayload(data: SettingsPayload): UiPreferences {
     codeShowCollapseButton: data.code_show_collapse_button ?? true,
     codeShowSaveButton: data.code_show_save_button ?? true,
     preferredResponseLanguage: data.preferred_response_language === "ru" || data.preferred_response_language === "en" ? data.preferred_response_language : "auto",
+    thinkingDisplay: data.thinking_display === "always" || data.thinking_display === "hidden" ? data.thinking_display : "collapse_after_answer",
     interfaceLanguage: isSupportedLocale(data.interface_language) ? data.interface_language : DEFAULT_LOCALE,
   };
 }

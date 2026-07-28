@@ -98,9 +98,10 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   timestamp: string;
   attachments?: Attachment[];
-  status?: ChatTurnStatus;
+  status?: ChatTurn["status"];
   error?: string | null;
   codeFilename?: string;
   doneReason?: string | null;
@@ -659,6 +660,42 @@ function FeedbackRow({ content, messageId, speech, conversationId, isLatestAssis
 
 // ─── Message ───────────────────────────────────────────────────────────────────
 
+function ThinkingPanel({ thinking, status, hasContent }: { thinking: string; status?: ChatTurn["status"]; hasContent: boolean }) {
+  const { prefs, t } = useUiPreferences();
+  const [open, setOpen] = useState(status === "thinking");
+  useEffect(() => {
+    if (prefs.thinkingDisplay === "always") setOpen(true);
+    else if (prefs.thinkingDisplay === "collapse_after_answer" && hasContent) setOpen(false);
+    else if (status === "thinking") setOpen(true);
+  }, [hasContent, prefs.thinkingDisplay, status]);
+  if (prefs.thinkingDisplay === "hidden") return null;
+  const label = status === "continuing"
+    ? t("chat.continuing")
+    : hasContent
+      ? t("chat.answering")
+      : t("chat.thinking");
+  return (
+    <div className="mb-2 rounded-lg border border-white/[0.06] bg-white/[0.025] overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] text-[#8a7f75] hover:text-[#c8c0b7]"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${status === "thinking" || status === "continuing" ? "bg-[#c4644a] animate-pulse" : "bg-[#4b4540]"}`} />
+          {label}
+        </span>
+        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="border-t border-white/[0.05] px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap text-[#6b5f57] max-h-56 overflow-auto">
+          {thinking || "…"}
+        </div>
+      )}
+    </div>
+  );
+}
 interface MessageBubbleProps {
   message: Message;
   index: number;
@@ -699,6 +736,7 @@ function MessageBubble({ message, index, speech, conversationId, isLatestAssista
           </div>
         ) : (
           <div className="w-full">
+            <ThinkingPanel thinking={message.thinking ?? ""} status={message.status} hasContent={message.content.length > 0} />
             <MessageCodeContent content={message.content} filename={message.codeFilename} />
             <GenerationLimitNotice
               doneReason={message.doneReason}
@@ -915,8 +953,8 @@ function VoiceStateText({ state }: { state: VoiceState }) {
 
 const MAX_COMPOSER_H = 200;
 
-function Composer({ onSend, thinking, speech, conversationId }: {
-  onSend: (text: string, attachments: Attachment[]) => Promise<SendResult>; thinking: boolean;
+function Composer({ onSend, onCancel, thinking, speech, conversationId }: {
+  onSend: (text: string, attachments: Attachment[]) => Promise<SendResult>; onCancel: () => void; thinking: boolean;
   speech: UseSpeechResult; conversationId: string | null;
 }) {
   const { t } = useUiPreferences();
@@ -1447,15 +1485,26 @@ function Composer({ onSend, thinking, speech, conversationId }: {
               )}
               <Mic size={14} />
             </motion.button>
-            <motion.button
-              onClick={send}
-              disabled={!hasContent || thinking || conversation.active}
-              title={conversation.active ? "Stop Conversation Mode to send manually" : undefined}
-              whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
-              className="w-7 h-7 rounded-xl bg-[#c4644a] flex items-center justify-center text-white disabled:opacity-25 transition-opacity shadow-sm"
-            >
-              <Send size={12} />
-            </motion.button>
+            {thinking ? (
+              <motion.button
+                onClick={onCancel}
+                title={t("chat.stopGeneration")}
+                whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+                className="w-7 h-7 rounded-xl bg-red-500/80 flex items-center justify-center text-white shadow-sm"
+              >
+                <Square size={11} fill="currentColor" />
+              </motion.button>
+            ) : (
+              <motion.button
+                onClick={send}
+                disabled={!hasContent || conversation.active}
+                title={conversation.active ? "Stop Conversation Mode to send manually" : undefined}
+                whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+                className="w-7 h-7 rounded-xl bg-[#c4644a] flex items-center justify-center text-white disabled:opacity-25 transition-opacity shadow-sm"
+              >
+                <Send size={12} />
+              </motion.button>
+            )}
           </div>
         </div>
       </motion.div>
@@ -1997,7 +2046,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
   onNewChat: () => void;
   transcriptRef?: React.MutableRefObject<() => string>;
 }) {
-  const { messages, sending, error, send, reset } = useChat();
+  const { messages, sending, error, send, cancel, reset } = useChat();
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const { status: runtimeStatus } = useRuntimeStatus();
   const { data: chatModels } = useModels();
@@ -2051,7 +2100,8 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
           content: m.content,
           timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           attachments: storedAttachmentsFromMessage(m),
-          status: (m.metadata.status === "processing" || m.metadata.status === "failed" || m.metadata.status === "completed") ? m.metadata.status : undefined,
+          status: typeof m.metadata.status === "string" ? m.metadata.status as ChatTurn["status"] : undefined,
+          thinking: typeof m.metadata.thinking === "string" ? m.metadata.thinking : "",
           error: typeof m.metadata.error === "string" ? m.metadata.error : null,
           codeFilename: typeof m.metadata.filename === "string" ? m.metadata.filename : typeof m.metadata.code_filename === "string" ? m.metadata.code_filename : undefined,
           doneReason: typeof m.metadata.done_reason === "string" ? m.metadata.done_reason : null,
@@ -2242,7 +2292,6 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
                   onContinue={handleContinue}
                 />
               ))}
-              {sending && prefs.showTypingAnimation && <ThinkingIndicator />}
               {error && <div className="text-xs text-red-400 px-1 py-2">{error}</div>}
             </>
           )}
@@ -2252,6 +2301,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
         {activeConversationId && (
           <Composer
             onSend={handleSend}
+            onCancel={cancel}
             thinking={sending}
             speech={speech}
             conversationId={activeConversationId}
@@ -3845,6 +3895,11 @@ function LanguageSettings() {
     await savePrefs({ preferred_response_language: lang });
     setPending(null);
   };
+  const setThinkingDisplay = async (value: "always" | "collapse_after_answer" | "hidden") => {
+    setPending("thinking");
+    await savePrefs({ thinking_display: value });
+    setPending(null);
+  };
   const applyPreset = async (input: string, response: "auto" | "ru" | "en") => {
     setPending("preset");
     await Promise.all([saveSettings({ stt_language: input }), savePrefs({ preferred_response_language: response })]);
@@ -3891,6 +3946,14 @@ function LanguageSettings() {
           <option value="auto">{t("settings.language.autoNoPreference")}</option>
           <option value="ru">{t("settings.language.russian")} (ru)</option>
           <option value="en">{t("settings.language.english")} (en)</option>
+        </select>
+      </div>      <div className="flex items-center justify-between">
+        <div><span className="text-xs text-[#a89f96]">{t("settings.language.thinkingDisplay")}</span></div>
+        <select value={prefs.thinkingDisplay} onChange={e => setThinkingDisplay(e.target.value as "always" | "collapse_after_answer" | "hidden")} disabled={loading}
+          className="bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2 py-1.5 outline-none w-52">
+          <option value="always">{t("settings.language.thinkingAlways")}</option>
+          <option value="collapse_after_answer">{t("settings.language.thinkingCollapse")}</option>
+          <option value="hidden">{t("settings.language.thinkingHidden")}</option>
         </select>
       </div>
     </SettingsCard>

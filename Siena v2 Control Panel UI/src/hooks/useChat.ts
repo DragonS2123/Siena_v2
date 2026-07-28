@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
-import { apiUrl, sienaClient } from "../api/sienaClient";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { readNdjsonStream, type StreamGenerationStatus } from "../api/ndjsonStream";
+import { apiUrl, sienaClient, SienaApiError } from "../api/sienaClient";
 import type { ChatAttachmentPayload, ChatTurnStatus, StoredAttachmentMetadata } from "../api/types";
 import type { Attachment } from "../app/App";
 
@@ -7,12 +8,15 @@ export interface ChatTurn {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   timestamp: string;
   attachments?: Attachment[];
-  status?: ChatTurnStatus;
+  status?: ChatTurnStatus | StreamGenerationStatus;
   error?: string | null;
   doneReason?: string | null;
   incomplete?: boolean;
+  segmentCount?: number;
+  continuationCount?: number;
   configuredNumPredict?: number | null;
 }
 
@@ -31,6 +35,7 @@ interface UseChatResult {
     conversationId?: string | null,
     isConversationActive?: (conversationId: string) => boolean,
   ) => Promise<SendResult>;
+  cancel: () => void;
   reset: (messages?: ChatTurn[]) => void;
 }
 
@@ -38,9 +43,6 @@ function nowLabel(): string {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Image attachments send their dataUrl as data_url so the backend can run
-// glm-ocr on them (Phase 4B) — text-like attachments send `content` instead;
-// each attachment only ever carries one or the other.
 function toPayloadAttachment(a: Attachment): ChatAttachmentPayload {
   return {
     name: a.name,
@@ -79,19 +81,27 @@ function formatStoredSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * Wraps POST /api/chat with local message-list state. Text and attachments
- * (for text/code/markdown/json/log — full content; for image — dataUrl, OCR'd
- * server-side) are both sent to the backend, which injects the resulting
- * content into the model's context. Attachments stay on the local user turn
- * regardless, so the existing attachment-chip rendering in MessageBubble
- * keeps working, and image chips get their OCR status (running/extracted/
- * failed/unavailable) reflected back once the response arrives.
- */
 export function useChat(initial: ChatTurn[] = []): UseChatResult {
   const [messages, setMessages] = useState<ChatTurn[]>(initial);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const activeAssistantIdRef = useRef<string | null>(null);
+
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const activeId = activeAssistantIdRef.current;
+    if (activeId) {
+      setMessages((current) => current.map((message) =>
+        message.id === activeId
+          ? { ...message, status: "cancelled", incomplete: true }
+          : message,
+      ));
+    }
+  }, []);
+
+  useEffect(() => () => cancel(), [cancel]);
 
   const send = useCallback(async (
     text: string,
@@ -104,98 +114,189 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
     const content = trimmed || fallbackContent;
     if (!content) return { turn: null, errorMessage: null };
 
-    const messageId = crypto.randomUUID();
-    const sentAttachments = attachments.map((a) => (a.type === "image" ? { ...a, ocrStatus: "running" as const } : a));
-    setMessages((m) => [
-      ...m,
+    const localUserId = crypto.randomUUID();
+    const temporaryAssistantId = crypto.randomUUID();
+    let assistantId: string = temporaryAssistantId;
+    let userId: string = localUserId;
+    const timestamp = nowLabel();
+    const sentAttachments = attachments.map((a) =>
+      a.type === "image" ? { ...a, ocrStatus: "running" as const } : a,
+    );
+    let rawThinking = "";
+    let rawContent = "";
+    let status: StreamGenerationStatus = "thinking";
+    let doneReason: string | null = null;
+    let incomplete = true;
+    let segmentCount = 0;
+    let continuationCount = 0;
+    let configuredNumPredict: number | null = null;
+    let streamStarted = false;
+    let renderTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const currentTurn = (): ChatTurn => ({
+      id: assistantId,
+      role: "assistant",
+      content: rawContent,
+      thinking: rawThinking,
+      timestamp,
+      status,
+      doneReason,
+      incomplete,
+      segmentCount,
+      continuationCount,
+      configuredNumPredict,
+    });
+    const flush = (immediate = false) => {
+      const commit = () => {
+        renderTimer = null;
+        const snapshot = currentTurn();
+        setMessages((current) => current.map((message) =>
+          message.id === assistantId || message.id === temporaryAssistantId
+            ? snapshot
+            : message,
+        ));
+      };
+      if (immediate) {
+        if (renderTimer) clearTimeout(renderTimer);
+        commit();
+      } else if (!renderTimer) {
+        renderTimer = setTimeout(commit, 40);
+      }
+    };
+
+    setMessages((current) => [
+      ...current,
       {
-        id: messageId,
+        id: localUserId,
         role: "user",
         content,
-        timestamp: nowLabel(),
+        timestamp,
         attachments: sentAttachments.length > 0 ? sentAttachments : undefined,
         status: "processing",
       },
+      currentTurn(),
     ]);
+    activeAssistantIdRef.current = temporaryAssistantId;
     setSending(true);
     setError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const response = await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId);
-      const {
-        answer, message_id, assistant_message_id, attachments: stored_attachments,
-        ocr_results, vision_results, done_reason, incomplete, configured_num_predict,
-      } = response;
-      void sienaClient.logClientEvent("chat_response_received", {
-        content_length: answer.length,
-        content_tail_json: JSON.stringify(answer.slice(-300)),
-        done_reason,
-        configured_num_predict,
-      });
+      const response = await sienaClient.openChatStream(
+        content,
+        attachments.map(toPayloadAttachment),
+        conversationId,
+        controller.signal,
+      );
+      for await (const event of readNdjsonStream(response.body!)) {
+        if (event.type === "generation.started") {
+          streamStarted = true;
+          const previousAssistantId = assistantId;
+          assistantId = event.assistant_message_id ?? assistantId;
+          userId = event.message_id ?? userId;
+          activeAssistantIdRef.current = assistantId;
+          const stored = Array.isArray(event.attachments)
+            ? (event.attachments as StoredAttachmentMetadata[]).map(fromStoredAttachment)
+            : undefined;
+          setMessages((current) => current.map((message) => {
+            if (message.id === previousAssistantId || message.id === temporaryAssistantId) return currentTurn();
+            if (message.id === localUserId) {
+              return {
+                ...message,
+                id: userId,
+                status: "completed",
+                attachments: stored && stored.length > 0 ? stored : message.attachments,
+              };
+            }
+            return message;
+          }));
+        } else if (event.type === "assistant.thinking.delta") {
+          rawThinking += event.delta ?? "";
+          if (!rawContent) status = "thinking";
+          flush();
+        } else if (event.type === "assistant.content.delta") {
+          rawContent += event.delta ?? "";
+          if (status !== "continuing") status = "answering";
+          flush();
+        } else if (event.type === "generation.continuation.started") {
+          status = "continuing";
+          continuationCount = Number(event.continuation ?? continuationCount + 1);
+          flush(true);
+        } else if (event.type === "generation.segment.completed") {
+          segmentCount = Number(event.index ?? segmentCount + 1);
+          doneReason = typeof event.done_reason === "string" ? event.done_reason : doneReason;
+          flush();
+        } else if (event.type === "generation.completed") {
+          status = event.status ?? "completed";
+          doneReason = typeof event.done_reason === "string" ? event.done_reason : null;
+          incomplete = event.incomplete === true;
+          segmentCount = Number(event.segment_count ?? segmentCount);
+          continuationCount = Number(event.continuation_count ?? continuationCount);
+          configuredNumPredict = typeof event.configured_num_predict === "number" ? event.configured_num_predict : null;
+          flush(true);
+        } else if (event.type === "generation.failed") {
+          status = "failed";
+          incomplete = true;
+          flush(true);
+          throw new Error(event.error ?? "Streaming generation failed");
+        } else if (event.type === "generation.cancelled") {
+          status = "cancelled";
+          incomplete = true;
+          flush(true);
+        }
+      }
       const stillActive = !conversationId || !isConversationActive || isConversationActive(conversationId);
-      if (!stillActive) {
-        return {
-          turn: { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed", doneReason: done_reason, incomplete, configuredNumPredict: configured_num_predict },
-          errorMessage: null,
-        };
+      const turn = currentTurn();
+      if (!stillActive) return { turn, errorMessage: null };
+      void sienaClient.logClientEvent("chat_stream_completed", {
+        content_length: rawContent.length,
+        thinking_length: rawThinking.length,
+        content_tail_json: JSON.stringify(rawContent.slice(-300)),
+        done_reason: doneReason,
+        segment_count: segmentCount,
+        continuation_count: continuationCount,
+      });
+      return { turn, errorMessage: null };
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        status = "cancelled";
+        incomplete = true;
+        flush(true);
+        return { turn: currentTurn(), errorMessage: null };
       }
-      if (message_id || (stored_attachments && stored_attachments.length > 0)) {
-        const persistedAttachments = stored_attachments?.map(fromStoredAttachment);
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === messageId || msg.id === message_id
-              ? {
-                  ...msg,
-                  id: message_id ?? msg.id,
-                  status: "completed",
-                  error: null,
-                  attachments: persistedAttachments && persistedAttachments.length > 0 ? persistedAttachments : msg.attachments,
-                }
-              : msg,
-          ),
-        );
+      if (!streamStarted && caught instanceof SienaApiError && [404, 405, 501].includes(caught.status)) {
+        const fallback = await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId);
+        assistantId = fallback.assistant_message_id ?? assistantId;
+        rawContent = fallback.answer;
+        doneReason = fallback.done_reason ?? null;
+        incomplete = fallback.incomplete === true;
+        status = incomplete ? "length_limited" : "completed";
+        configuredNumPredict = fallback.configured_num_predict ?? null;
+        flush(true);
+        return { turn: currentTurn(), errorMessage: null };
       }
-      if ((ocr_results && ocr_results.length > 0) || (vision_results && vision_results.length > 0)) {
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === (message_id ?? messageId)
-              ? {
-                  ...msg,
-                  attachments: msg.attachments?.map((a) => {
-                    const ocrResult = ocr_results?.find((r) => r.name === a.name);
-                    const visionResult = vision_results?.find((r) => r.name === a.name);
-                    return {
-                      ...a,
-                      ...(ocrResult ? { ocrStatus: ocrResult.status, ocrPreview: ocrResult.preview, ocrQuality: ocrResult.quality } : {}),
-                      ...(visionResult ? { visionStatus: visionResult.status, visionPreview: visionResult.preview } : {}),
-                    };
-                  }),
-                }
-              : msg,
-          ),
-        );
-      }
-      const assistantTurn: ChatTurn = { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed", doneReason: done_reason, incomplete, configuredNumPredict: configured_num_predict };
-      setMessages((m) => [...m, assistantTurn]);
-      return { turn: assistantTurn, errorMessage: null };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to reach Siena backend";
+      const message = caught instanceof Error ? caught.message : "Failed to reach Siena backend";
       setError(message);
-      if (!conversationId || !isConversationActive || isConversationActive(conversationId)) {
-        setMessages((m) =>
-          m.map((msg) =>
-            msg.id === messageId
-              ? { ...msg, status: "failed", error: message }
-              : msg,
-          ),
-        );
-      }
+      status = "failed";
+      incomplete = true;
+      flush(true);
+      setMessages((current) => current.map((item) =>
+        item.id === userId || item.id === localUserId ? { ...item, status: "failed", error: message } : item,
+      ));
       return { turn: null, errorMessage: message };
     } finally {
+      if (renderTimer) clearTimeout(renderTimer);
+      if (abortRef.current === controller) abortRef.current = null;
+      activeAssistantIdRef.current = null;
       setSending(false);
     }
   }, []);
 
-  const reset = useCallback((next: ChatTurn[] = []) => setMessages(next), []);
+  const reset = useCallback((next: ChatTurn[] = []) => {
+    cancel();
+    setMessages(next);
+  }, [cancel]);
 
-  return { messages, sending, error, send, reset };
+  return { messages, sending, error, send, cancel, reset };
 }

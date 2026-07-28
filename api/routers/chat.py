@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.dependencies import runtime
@@ -24,6 +27,36 @@ class ChatRequest(BaseModel):
     model_override: str | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
 
+
+@router.post("/stream")
+async def chat_stream(payload: ChatRequest, request: Request, app: Runtime = Depends(runtime)) -> StreamingResponse:
+    if app.conversations.get_conversation(payload.conversation_id) is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+
+    async def ndjson():
+        stream = app.chat.stream_turn(
+            payload.conversation_id,
+            payload.message.strip(),
+            model_override=payload.model_override,
+            attachments=[attachment.model_dump() for attachment in payload.attachments],
+        )
+        try:
+            async for event in stream:
+                if await request.is_disconnected():
+                    await stream.aclose()
+                    return
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        finally:
+            await stream.aclose()
+
+    return StreamingResponse(
+        ndjson(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @router.post("")
 async def chat(payload: ChatRequest, app: Runtime = Depends(runtime)) -> dict:

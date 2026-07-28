@@ -7,7 +7,12 @@ Runtime не решает, вызывать ли модель с tools или б
 
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 import ollama
+
+import config
 
 from core.errors import SienaInfraError, SienaTimeoutError
 
@@ -23,6 +28,13 @@ class OllamaClient:
         num_predict: int | None = None,
     ):
         self._client = ollama.Client(host=host, timeout=timeout)
+        self._async_client = ollama.AsyncClient(
+            host=host,
+            timeout=httpx.Timeout(
+                timeout=config.OLLAMA_STREAM_IDLE_TIMEOUT_SECONDS,
+                connect=config.OLLAMA_CONNECT_TIMEOUT_SECONDS,
+            ),
+        )
         self._host = host
         self._model = model
         self._think = think
@@ -37,6 +49,40 @@ class OllamaClient:
     def num_predict(self) -> int | None:
         return self._num_predict
 
+    async def stream_chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+    ):
+        """Yield raw Ollama ChatResponse chunks with stream=true."""
+        target_model = model or self._model
+        options: dict = {}
+        if self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx
+        if self._num_predict is not None:
+            options["num_predict"] = self._num_predict
+        try:
+            response = await self._async_client.chat(
+                model=target_model,
+                messages=messages,
+                tools=tools or None,
+                stream=True,
+                think=True,
+                options=options or None,
+            )
+            async for chunk in response:
+                yield chunk.model_dump(exclude_none=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, (TimeoutError, httpx.TimeoutException)) or "timeout" in type(exc).__name__.lower():
+                raise SienaTimeoutError(
+                    f"Ollama stream timeout (host={self._host}, model={target_model}): {exc}"
+                ) from exc
+            raise SienaInfraError(
+                f"Ollama stream failed (host={self._host}, model={target_model}): {exc}"
+            ) from exc
     def chat(self, messages: list[dict], tools: list[dict] | None = None, model: str | None = None) -> dict:
         """Возвращает ПОЛНЫЙ сырой ответ Ollama как plain dict: model, created_at, done,
         done_reason, timing-поля и message (role/content/tool_calls/thinking).

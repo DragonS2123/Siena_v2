@@ -317,6 +317,64 @@ class ConversationStore:
             "url": f"/api/attachments/{attachment['id']}/content",
         }
 
+    def update_message(
+        self,
+        message_id: str,
+        *,
+        content: str | None = None,
+        model: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Atomically checkpoint content/model/metadata for one assistant message."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT content, model, metadata_json FROM conversation_messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(message_id)
+                current_metadata = json.loads(row["metadata_json"] or "{}")
+                if metadata is not None:
+                    current_metadata.update(metadata)
+                conn.execute(
+                    """
+                    UPDATE conversation_messages
+                    SET content = ?, model = ?, metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        row["content"] if content is None else content,
+                        row["model"] if model is None else model,
+                        json.dumps(current_metadata, ensure_ascii=False),
+                        message_id,
+                    ),
+                )
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Message checkpoint failed for {message_id}: {exc}") from exc
+
+    def recover_interrupted_messages(self) -> int:
+        """Turn crash-left active stream rows into honest interrupted partials."""
+        recovered = 0
+        active = {"pending", "thinking", "answering", "continuing"}
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, metadata_json FROM conversation_messages WHERE role = 'assistant'"
+                ).fetchall()
+                for row in rows:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                    if metadata.get("status") not in active:
+                        continue
+                    metadata.update({"status": "interrupted", "incomplete": True})
+                    conn.execute(
+                        "UPDATE conversation_messages SET metadata_json = ? WHERE id = ?",
+                        (json.dumps(metadata, ensure_ascii=False), row["id"]),
+                    )
+                    recovered += 1
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Interrupted message recovery failed: {exc}") from exc
+        return recovered
     def update_message_metadata(self, message_id: str, metadata: dict[str, Any]) -> None:
         metadata_json = json.dumps(metadata, ensure_ascii=False)
         try:

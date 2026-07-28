@@ -305,6 +305,11 @@ export interface SettingsPayload {
   num_predict: number;
   code_num_predict: number;
   code_request_timeout_seconds: number;
+  auto_continue_on_length: boolean;
+  max_auto_continuations: number;
+  max_total_generation_tokens: number;
+  continuation_overlap_window_chars: number;
+  thinking_display: "always" | "collapse_after_answer" | "hidden" | string;
   max_context_messages: number;
   log_level: string;
   // Settings unfreeze pass (HANDOFF_v2.md) — real, persisted to
