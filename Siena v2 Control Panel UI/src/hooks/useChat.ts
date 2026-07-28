@@ -11,6 +11,9 @@ export interface ChatTurn {
   attachments?: Attachment[];
   status?: ChatTurnStatus;
   error?: string | null;
+  doneReason?: string | null;
+  incomplete?: boolean;
+  configuredNumPredict?: number | null;
 }
 
 export interface SendResult {
@@ -117,12 +120,21 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
     setSending(true);
     setError(null);
     try {
-      const { answer, message_id, assistant_message_id, attachments: stored_attachments, ocr_results, vision_results } =
-        await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId);
+      const response = await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId);
+      const {
+        answer, message_id, assistant_message_id, attachments: stored_attachments,
+        ocr_results, vision_results, done_reason, incomplete, configured_num_predict,
+      } = response;
+      void sienaClient.logClientEvent("chat_response_received", {
+        content_length: answer.length,
+        content_tail_json: JSON.stringify(answer.slice(-300)),
+        done_reason,
+        configured_num_predict,
+      });
       const stillActive = !conversationId || !isConversationActive || isConversationActive(conversationId);
       if (!stillActive) {
         return {
-          turn: { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed" },
+          turn: { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed", doneReason: done_reason, incomplete, configuredNumPredict: configured_num_predict },
           errorMessage: null,
         };
       }
@@ -162,7 +174,7 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
           ),
         );
       }
-      const assistantTurn: ChatTurn = { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed" };
+      const assistantTurn: ChatTurn = { id: assistant_message_id ?? crypto.randomUUID(), role: "assistant", content: answer, timestamp: nowLabel(), status: "completed", doneReason: done_reason, incomplete, configuredNumPredict: configured_num_predict };
       setMessages((m) => [...m, assistantTurn]);
       return { turn: assistantTurn, errorMessage: null };
     } catch (err) {

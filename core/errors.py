@@ -18,3 +18,7 @@ class SienaToolError(Exception):
 
 class SienaInfraError(Exception):
     pass
+
+
+class SienaTimeoutError(SienaInfraError):
+    """Ollama did not produce a response before the finite transport timeout."""

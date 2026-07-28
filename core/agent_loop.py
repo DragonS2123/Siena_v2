@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from core.ollama_client import OllamaClient
 from core.session import Session
 from logging_.logger import SienaLogger
@@ -19,6 +21,40 @@ _KEEP_KEYS = ("role", "content", "tool_calls")
 
 class MaxIterationsReached(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    content: str
+    done: bool | None = None
+    done_reason: str | None = None
+    finish_reason: str | None = None
+    eval_count: int | None = None
+    prompt_eval_count: int | None = None
+    total_duration: int | None = None
+    error: str | None = None
+    cancelled: bool = False
+    timeout: bool = False
+    configured_num_predict: int | None = None
+
+    @property
+    def incomplete(self) -> bool:
+        return self.done_reason == "length" or self.finish_reason == "length"
+
+    def metadata(self) -> dict:
+        return {
+            "done": self.done,
+            "done_reason": self.done_reason,
+            "finish_reason": self.finish_reason,
+            "eval_count": self.eval_count,
+            "prompt_eval_count": self.prompt_eval_count,
+            "total_duration": self.total_duration,
+            "error": self.error,
+            "cancelled": self.cancelled,
+            "timeout": self.timeout,
+            "configured_num_predict": self.configured_num_predict,
+            "incomplete": self.incomplete,
+        }
 
 
 def _roles_count(messages: list[dict]) -> dict[str, int]:
@@ -36,7 +72,7 @@ def run(
     logger: SienaLogger,
     max_iterations: int,
     max_context_messages: int,
-) -> str:
+) -> AgentResult:
     seen_tool_calls: set[str] = set()
     for iteration in range(1, max_iterations + 1):
         context_messages = session.get_context_messages(max_context_messages)
@@ -71,7 +107,19 @@ def run(
             model=raw_response.get("model"),
             done_reason=done_reason,
             eval_count=raw_response.get("eval_count"),
+            prompt_eval_count=raw_response.get("prompt_eval_count"),
+            total_duration=raw_response.get("total_duration"),
+            done=raw_response.get("done"),
+            finish_reason=raw_response.get("finish_reason"),
+            error=raw_response.get("error"),
+            cancelled=False,
+            timeout=False,
+            configured_num_predict=ollama_client.num_predict,
             content_length=len(content),
+            content_tail_json=json.dumps(content[-300:], ensure_ascii=False),
+            transport_mode="non_streaming_json",
+            last_stream_message=None,
+            stop_sequences=[],
             tool_call_count=len(tool_calls or []),
         )
 
@@ -104,7 +152,17 @@ def run(
                     done_reason=done_reason,
                     content_length=len(content),
                 )
-            return content
+            return AgentResult(
+                content=content,
+                done=raw_response.get("done"),
+                done_reason=done_reason,
+                finish_reason=raw_response.get("finish_reason"),
+                eval_count=raw_response.get("eval_count"),
+                prompt_eval_count=raw_response.get("prompt_eval_count"),
+                total_duration=raw_response.get("total_duration"),
+                error=raw_response.get("error"),
+                configured_num_predict=ollama_client.num_predict,
+            )
 
         for call in tool_calls:
             function = call.get("function", {})

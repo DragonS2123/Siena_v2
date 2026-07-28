@@ -65,6 +65,9 @@
   "codeBlock.save": "сохранить",
   "codeBlock.openExpanded": "развернуть",
   "codeBlock.closeExpanded": "закрыть",
+  "codeBlock.incomplete": "Код не завершён — генерация была прервана или ещё продолжается.",
+  "chat.lengthWarning": "Ответ остановлен из-за ограничения длины. Код может быть неполным.",
+  "chat.continueGeneration": "Продолжить генерацию",
 
   "chat.placeholder.default": "Спросите Сиену о чём угодно…",
   "chat.placeholder.thinking": "Сиена отвечает…",

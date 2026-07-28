@@ -65,6 +65,9 @@
   "codeBlock.save": "save",
   "codeBlock.openExpanded": "expand",
   "codeBlock.closeExpanded": "close",
+  "codeBlock.incomplete": "Code is incomplete — generation was interrupted or is still in progress.",
+  "chat.lengthWarning": "The response stopped at the length limit. The code may be incomplete.",
+  "chat.continueGeneration": "Continue generation",
 
   "chat.placeholder.default": "Ask Siena anything…",
   "chat.placeholder.thinking": "Siena is responding…",

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CODE_VIEWER_SUPPORTED_LANGUAGES,
   CodeViewer,
+  GenerationLimitNotice,
   MessageCodeContent,
   parseMessageSegments,
 } from "./CodeViewer";
@@ -19,6 +20,9 @@ const labels: Record<string, string> = {
   "codeBlock.save": "save",
   "codeBlock.openExpanded": "expand",
   "codeBlock.closeExpanded": "close",
+  "codeBlock.incomplete": "Code is incomplete — generation was interrupted or is still in progress.",
+  "chat.lengthWarning": "The response stopped at the length limit. The code may be incomplete.",
+  "chat.continueGeneration": "Continue generation",
 };
 
 vi.mock("../hooks/useUiPreferences", () => ({
@@ -158,18 +162,36 @@ describe("assistant Markdown → original Code Viewer mapping", () => {
     expect(screen.getByTestId("code-viewer")).toBeInTheDocument();
   });
 
-  it("keeps an unfinished streaming fence in a safe plain-text state", () => {
+  it("renders an unfinished streaming fence as an incomplete Code Viewer", () => {
     expect(() => assistant("Answer:\n\n```python\nprint('still streaming')")).not.toThrow();
-    expect(screen.queryByTestId("code-viewer")).not.toBeInTheDocument();
-    expect(document.body.textContent).toContain("```python");
+    expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Code is incomplete");
+    expect(document.body.textContent).not.toContain("```python");
   });
 
   it("upgrades an unfinished streaming fence after the closing fence arrives", () => {
     const view = render(<MessageCodeContent content={"```python\nprint('streaming')"} />);
-    expect(screen.queryByTestId("code-viewer")).not.toBeInTheDocument();
+    expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "true");
     view.rerender(<MessageCodeContent content={"```python\nprint('streaming')\n```"} />);
     expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-language", "python");
+    expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "false");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("```");
+  });
+
+  it("renders a 500-line closed HTML fence without truncation", async () => {
+    const code = Array.from({ length: 500 }, (_, index) => `<div>line ${index + 1}</div>`).join("\n");
+    assistant(`\`\`\`html\n${code}\n\`\`\``);
+    expect(screen.getByTestId("code-viewer")).toHaveAttribute("data-incomplete", "false");
+    fireEvent.click(screen.getByRole("button", { name: "copy" }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(code));
+  });
+
+  it("normalizes CRLF fences and keeps surrounding text", () => {
+    assistant("before\r\n\r\n```html\r\n<p>ok</p>\r\n```\r\n\r\nafter");
+    expect(screen.getByTestId("code-viewer")).toBeInTheDocument();
+    expect(screen.getByText("before")).toBeInTheDocument();
+    expect(screen.getByText("after")).toBeInTheDocument();
   });
 
   it("keeps the Cyberpunk regression word as ordinary code content", () => {
@@ -190,6 +212,20 @@ describe("assistant Markdown → original Code Viewer mapping", () => {
   });
 });
 
+describe("length completion status", () => {
+  it("distinguishes done_reason=length and offers continuation", () => {
+    const onContinue = vi.fn();
+    render(<GenerationLimitNotice doneReason="length" onContinue={onContinue} />);
+    expect(screen.getByRole("status")).toHaveTextContent("The response stopped at the length limit");
+    fireEvent.click(screen.getByRole("button", { name: "Continue generation" }));
+    expect(onContinue).toHaveBeenCalledOnce();
+  });
+
+  it("does not warn for a normal stop", () => {
+    render(<GenerationLimitNotice doneReason="stop" onContinue={vi.fn()} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
 describe("parser, filenames, and language coverage", () => {
   it("supports every required language and tilde fences", () => {
     for (const language of [

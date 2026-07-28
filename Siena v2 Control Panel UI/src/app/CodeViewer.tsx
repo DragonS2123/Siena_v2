@@ -20,6 +20,7 @@ export interface MessageSegment {
   lang?: string;
   filename?: string;
   filenameExplicit?: boolean;
+  incomplete?: boolean;
 }
 
 const LANGUAGE_ALIASES: Record<string, string> = {
@@ -170,8 +171,8 @@ function filenameFromFirstLine(code: string): string | undefined {
 
 /**
  * Splits CommonMark-style fenced blocks without evaluating Markdown as HTML.
- * An unclosed fence intentionally remains text while streaming; calling this
- * function again with the completed message produces a code segment.
+ * An unclosed fence is still code with incomplete=true; a later render with
+ * the closing fence automatically replaces it with a complete code segment.
  */
 export function parseMessageSegments(content: string): MessageSegment[] {
   const source = content.replace(/\r\n?/g, "\n");
@@ -202,12 +203,24 @@ export function parseMessageSegments(content: string): MessageSegment[] {
       }
     }
 
-    // During streaming a fence can be temporarily incomplete. Preserve it
-    // verbatim as text and let the next React render parse it once closed.
-    if (closingIndex < 0) break;
-
     if (offset > textStart) {
       segments.push({ type: "text", content: source.slice(textStart, offset) });
+    }
+
+    if (closingIndex < 0) {
+      const parsedInfo = parseFenceInfo(opening[2]);
+      const code = lines.slice(lineIndex + 1).join("\n");
+      const detectedFilename = parsedInfo.filename ?? filenameFromFirstLine(code);
+      segments.push({
+        type: "code",
+        content: code,
+        lang: parsedInfo.lang,
+        filename: safeFilename(detectedFilename, parsedInfo.lang),
+        filenameExplicit: Boolean(detectedFilename),
+        incomplete: true,
+      });
+      textStart = source.length;
+      break;
     }
 
     const parsedInfo = parseFenceInfo(opening[2]);
@@ -480,10 +493,12 @@ export function CodeViewer({
   lang: rawLang,
   code,
   filename: rawFilename,
+  incomplete = false,
 }: {
   lang: string;
   code: string;
   filename?: string;
+  incomplete?: boolean;
 }) {
   const { prefs, t } = useUiPreferences();
   const lang = normalizeLanguage(rawLang);
@@ -596,6 +611,7 @@ export function CodeViewer({
         data-testid="code-viewer"
         data-language={lang}
         data-filename={filename}
+        data-incomplete={incomplete ? "true" : "false"}
       >
         <div className="flex items-center justify-between gap-3 px-4 py-2 bg-[#181512] border-b border-white/[0.06]">
           <ViewerIdentity filename={filename} lang={lang} />
@@ -614,6 +630,14 @@ export function CodeViewer({
             </motion.div>
           )}
         </AnimatePresence>
+        {incomplete && (
+          <div
+            className="border-t border-amber-400/20 bg-amber-400/[0.06] px-4 py-2 text-[11px] text-amber-300"
+            role="status"
+          >
+            {t("codeBlock.incomplete")}
+          </div>
+        )}
       </div>
 
       {expanded && createPortal(
@@ -717,6 +741,31 @@ function TextContent({ text }: { text: string }) {
   );
 }
 
+export function GenerationLimitNotice({
+  doneReason,
+  disabled = false,
+  onContinue,
+}: {
+  doneReason?: string | null;
+  disabled?: boolean;
+  onContinue: () => void;
+}) {
+  const { t } = useUiPreferences();
+  if (doneReason !== "length") return null;
+  return (
+    <div className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2 text-[11px] text-amber-300" role="status">
+      <div>{t("chat.lengthWarning")}</div>
+      <button
+        type="button"
+        className="mt-2 rounded-md border border-amber-300/25 px-2.5 py-1 text-[10px] font-medium hover:bg-amber-300/10 disabled:opacity-40"
+        disabled={disabled}
+        onClick={onContinue}
+      >
+        {t("chat.continueGeneration")}
+      </button>
+    </div>
+  );
+}
 export function MessageCodeContent({ content, filename }: { content: string; filename?: string }) {
   const segments = useMemo(() => parseMessageSegments(content), [content]);
   const codeSegmentCount = segments.filter((segment) => segment.type === "code").length;
@@ -729,6 +778,7 @@ export function MessageCodeContent({ content, filename }: { content: string; fil
             lang={segment.lang ?? "plaintext"}
             code={segment.content}
             filename={segment.filenameExplicit ? segment.filename : codeSegmentCount === 1 ? (filename ?? segment.filename) : segment.filename}
+            incomplete={segment.incomplete}
           />
         ) : (
           <TextContent key={index} text={segment.content} />

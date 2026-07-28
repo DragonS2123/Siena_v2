@@ -222,6 +222,15 @@ export interface ChatResponse {
   routing_reason?: string;
   routing_mode?: string;
   manual_only?: boolean;
+  done?: boolean | null;
+  done_reason?: string | null;
+  finish_reason?: string | null;
+  eval_count?: number | null;
+  prompt_eval_count?: number | null;
+  total_duration?: number | null;
+  configured_num_predict?: number | null;
+  incomplete?: boolean;
+  timeout?: boolean;
 }
 
 // POST /api/translate — matches api/server.py's TranslateRequest/response
@@ -294,6 +303,8 @@ export interface SettingsPayload {
   delegate_timeout_seconds: number;
   num_ctx: number;
   num_predict: number;
+  code_num_predict: number;
+  code_request_timeout_seconds: number;
   max_context_messages: number;
   log_level: string;
   // Settings unfreeze pass (HANDOFF_v2.md) — real, persisted to

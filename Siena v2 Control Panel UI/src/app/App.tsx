@@ -33,7 +33,7 @@ import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import { useVoiceRecorder } from "../hooks/useVoiceRecorder";
 import { useVoiceStatus } from "../hooks/useVoiceStatus";
 import { TraceSocketProvider, useTraceSocket } from "../hooks/useTraceSocket";
-import { MessageCodeContent } from "./CodeViewer";
+import { GenerationLimitNotice, MessageCodeContent } from "./CodeViewer";
 
 // Injected at build time by vite.config.ts's `define` from package.json's
 // own version field — real, not a hand-typed placeholder (Settings >
@@ -103,6 +103,9 @@ interface Message {
   status?: ChatTurnStatus;
   error?: string | null;
   codeFilename?: string;
+  doneReason?: string | null;
+  incomplete?: boolean;
+  configuredNumPredict?: number | null;
 }
 
 // ─── Nav config ────────────────────────────────────────────────────────────────
@@ -666,9 +669,10 @@ interface MessageBubbleProps {
   retryDisabled: boolean;
   retryError?: string;
   onRetry: (messageId: string) => void;
+  onContinue: (messageId: string) => void;
 }
 
-function MessageBubble({ message, index, speech, conversationId, isLatestAssistant, retrying, retryDisabled, retryError, onRetry }: MessageBubbleProps) {
+function MessageBubble({ message, index, speech, conversationId, isLatestAssistant, retrying, retryDisabled, retryError, onRetry, onContinue }: MessageBubbleProps) {
   const { prefs } = useUiPreferences();
   const isUser = message.role === "user";
   return (
@@ -696,6 +700,11 @@ function MessageBubble({ message, index, speech, conversationId, isLatestAssista
         ) : (
           <div className="w-full">
             <MessageCodeContent content={message.content} filename={message.codeFilename} />
+            <GenerationLimitNotice
+              doneReason={message.doneReason}
+              disabled={!isLatestAssistant || retryDisabled}
+              onContinue={() => onContinue(message.id)}
+            />
             <FeedbackRow
               content={message.content}
               messageId={message.id}
@@ -2045,6 +2054,9 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
           status: (m.metadata.status === "processing" || m.metadata.status === "failed" || m.metadata.status === "completed") ? m.metadata.status : undefined,
           error: typeof m.metadata.error === "string" ? m.metadata.error : null,
           codeFilename: typeof m.metadata.filename === "string" ? m.metadata.filename : typeof m.metadata.code_filename === "string" ? m.metadata.code_filename : undefined,
+          doneReason: typeof m.metadata.done_reason === "string" ? m.metadata.done_reason : null,
+          incomplete: m.metadata.incomplete === true,
+          configuredNumPredict: typeof m.metadata.configured_num_predict === "number" ? m.metadata.configured_num_predict : null,
         })));
       })
       .catch(() => {
@@ -2150,6 +2162,24 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
     }
   }, [messages, activeConversationId, send, setModelState, autoSpeak, speech]);
 
+  const handleContinue = useCallback(async (assistantMessageId: string) => {
+    const message = messages.find((item) => item.id === assistantMessageId);
+    if (!message || message.role !== "assistant" || message.doneReason !== "length") return;
+    const tail = message.content.slice(-2000);
+    const prompt = [
+      "Продолжи предыдущий ответ ровно с места остановки.",
+      "Не повторяй уже выданный текст. Верни продолжение в новом fenced-блоке того же языка, затем заверши код и закрой fence.",
+      "Конец предыдущего ответа:",
+      "---",
+      tail,
+    ].join("\n");
+    sienaClient.logClientEvent("continue_generation_requested", {
+      message_id: assistantMessageId,
+      previous_content_length: message.content.length,
+    });
+    await handleSend(prompt, []);
+  }, [handleSend, messages]);
+
   return (
     <div className="flex h-full">
       <div className="flex-1 min-w-0 flex flex-col">
@@ -2209,6 +2239,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
                   retryDisabled={retryingMessageId !== null || sending}
                   retryError={retryError?.messageId === msg.id ? retryError.message : undefined}
                   onRetry={handleRetry}
+                  onContinue={handleContinue}
                 />
               ))}
               {sending && prefs.showTypingAnimation && <ThinkingIndicator />}

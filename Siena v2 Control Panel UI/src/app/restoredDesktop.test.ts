@@ -13,7 +13,7 @@ describe("restored original Desktop surface", () => {
     }
     expect(appSource).toContain("function Composer(");
     expect(appSource).toContain("function MessageBubble(");
-    expect(appSource).toContain('import { MessageCodeContent } from "./CodeViewer"');
+    expect(appSource).toContain('import { GenerationLimitNotice, MessageCodeContent } from "./CodeViewer"');
     expect(codeViewerSource).toContain("export function parseMessageSegments(");
     expect(codeViewerSource).toContain("export function CodeViewer(");
     expect(appSource).toContain("function DesktopTitlebar(");

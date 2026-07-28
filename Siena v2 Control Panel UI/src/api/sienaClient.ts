@@ -45,10 +45,13 @@ const FRONTEND_DEFAULTS: Partial<SettingsPayload> = {
   code_show_save_button: true,
   preferred_response_language: "auto",
   interface_language: "en",
+  code_num_predict: 4096,
+  code_request_timeout_seconds: 300,
 };
 
 const PERSISTED_SETTINGS = new Set([
-  "max_context_messages", "num_ctx", "num_predict", "request_timeout_seconds",
+  "max_context_messages", "num_ctx", "num_predict", "code_num_predict",
+  "request_timeout_seconds", "code_request_timeout_seconds",
   "stt_language", "tts_provider", "interface_language", "appearance_theme",
   "ui_font_size", "ui_density", "show_message_timestamps",
   "show_typing_animation", "startup_page", "log_level",

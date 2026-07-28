@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ollama
 
-from core.errors import SienaInfraError
+from core.errors import SienaInfraError, SienaTimeoutError
 
 
 class OllamaClient:
@@ -74,6 +74,10 @@ class OllamaClient:
                 options=options or None,
             )
         except Exception as exc:
+            if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+                raise SienaTimeoutError(
+                    f"Ollama timeout (host={self._host}, model={target_model}): {exc}"
+                ) from exc
             raise SienaInfraError(
                 f"Ollama недоступен (host={self._host}, model={target_model}): {exc}"
             ) from exc

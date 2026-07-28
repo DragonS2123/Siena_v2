@@ -68,7 +68,7 @@ def create_runtime() -> Runtime:
 
     registry, short, long, candidates = build_tool_registry(logger, roles.assignments, installed)
     attachments = AttachmentService(config.ATTACHMENTS_STORAGE_ROOT, conversations, roles, logger)
-    chat = ChatService(conversations, roles, catalog, registry, long, attachments, logger)
+    chat = ChatService(conversations, roles, catalog, registry, long, attachments, logger, settings)
     stt = WhisperCppSTTProvider(
         config.WHISPER_CPP_EXE_PATH,
         config.WHISPER_CPP_MODEL_PATH,
