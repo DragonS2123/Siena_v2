@@ -3,12 +3,12 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   MessageSquare, Settings, Plus, Send, Copy, Check,
-  ChevronDown, ChevronUp, Terminal, Brain, Activity,
+  ChevronDown, Terminal, Brain, Activity,
   Cpu, Zap, Moon, Search, MoreHorizontal, Menu, Code2,
   Mic, CheckCircle, Hash, Database, ScrollText,
   Bug, Globe, Volume2, AlertTriangle, Filter,
   RefreshCw, PanelRight, X, Info,
-  ChevronRight, Workflow, Layers, Save,
+  ChevronRight, Workflow, Layers,
   ThumbsUp, ThumbsDown, RotateCcw, BookmarkPlus,
   Paperclip, FileText, FileCode, ImageIcon, FolderOpen, FileJson,
   Lightbulb, Trash2, Loader2, Square, VolumeX, Headphones, Download,
@@ -33,6 +33,7 @@ import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import { useVoiceRecorder } from "../hooks/useVoiceRecorder";
 import { useVoiceStatus } from "../hooks/useVoiceStatus";
 import { TraceSocketProvider, useTraceSocket } from "../hooks/useTraceSocket";
+import { MessageCodeContent } from "./CodeViewer";
 
 // Injected at build time by vite.config.ts's `define` from package.json's
 // own version field — real, not a hand-typed placeholder (Settings >
@@ -101,6 +102,7 @@ interface Message {
   attachments?: Attachment[];
   status?: ChatTurnStatus;
   error?: string | null;
+  codeFilename?: string;
 }
 
 // ─── Nav config ────────────────────────────────────────────────────────────────
@@ -387,149 +389,6 @@ function ViewHeader({ title, sub, children }: { title: string; sub?: string; chi
   );
 }
 
-// ─── Syntax highlighter ────────────────────────────────────────────────────────
-
-const PY_KW = new Set(["import","from","async","await","def","class","return","yield","for","in","if","else","elif","try","except","raise","with","as","and","or","not","True","False","None","pass","break","continue","lambda","while","property","list","str","int","dict","Union","self"]);
-const JS_KW = new Set(["import","export","from","const","let","var","function","async","await","return","if","else","for","while","class","extends","new","this","typeof","interface","type","enum","default","true","false","null","undefined","void","readonly","static","of"]);
-
-type TT = "kw"|"str"|"num"|"fn"|"type"|"comment"|"deco"|"op"|"plain";
-const TC: Record<TT, string> = {
-  kw: "text-[#c084fc]", str: "text-[#86c98e]", num: "text-[#e6956a]",
-  fn: "text-[#7dd3fc]", type: "text-[#fbbf24]", comment: "text-[#5a5550] italic",
-  deco: "text-[#fb923c]", op: "text-[#6b7280]", plain: "text-[#d8d0c7]",
-};
-
-function tokenizeLine(line: string, lang: string) {
-  const kws = lang === "python" ? PY_KW : JS_KW;
-  const out: { t: TT; v: string }[] = [];
-  let i = 0;
-  while (i < line.length) {
-    if ((lang === "python" && line[i] === "#") || (lang !== "python" && line.slice(i, i + 2) === "//")) {
-      out.push({ t: "comment", v: line.slice(i) }); break;
-    }
-    if ('"\'`'.includes(line[i])) {
-      const q = line[i]; let j = i + 1;
-      while (j < line.length && line[j] !== q) { if (line[j] === "\\") j++; j++; }
-      out.push({ t: "str", v: line.slice(i, j + 1) }); i = j + 1; continue;
-    }
-    if (/\d/.test(line[i]) && (i === 0 || !/\w/.test(line[i - 1]))) {
-      let j = i; while (j < line.length && /[\d._xXa-fA-F]/.test(line[j])) j++;
-      out.push({ t: "num", v: line.slice(i, j) }); i = j; continue;
-    }
-    if (line[i] === "@") {
-      let j = i + 1; while (j < line.length && /\w/.test(line[j])) j++;
-      out.push({ t: "deco", v: line.slice(i, j) }); i = j; continue;
-    }
-    if (/[a-zA-Z_]/.test(line[i])) {
-      let j = i; while (j < line.length && /\w/.test(line[j])) j++;
-      const w = line.slice(i, j);
-      const t: TT = kws.has(w) ? "kw" : j < line.length && line[j] === "(" ? "fn" : /^[A-Z]/.test(w) ? "type" : "plain";
-      out.push({ t, v: w }); i = j; continue;
-    }
-    out.push({ t: "op", v: line[i] }); i++;
-  }
-  return out;
-}
-
-const CODE_FONT_SIZE_PX: Record<string, string> = { small: "text-[11px]", default: "text-[13px]", large: "text-[15px]" };
-const CODE_LANG_EXTENSIONS: Record<string, string> = {
-  javascript: "js", typescript: "ts", jsx: "jsx", tsx: "tsx", python: "py", json: "json",
-  bash: "sh", shell: "sh", sh: "sh", html: "html", css: "css", sql: "sql", yaml: "yml",
-  markdown: "md", rust: "rs", go: "go", java: "java", cpp: "cpp", c: "c", csharp: "cs",
-};
-
-function SyntaxHighlight({ code, lang, fontSize = "default", wrap = false, highlight = true, showLineNumbers = true }: {
-  code: string; lang: string; fontSize?: string; wrap?: boolean; highlight?: boolean; showLineNumbers?: boolean;
-}) {
-  return (
-    <div className={`${CODE_FONT_SIZE_PX[fontSize] ?? CODE_FONT_SIZE_PX.default} leading-[1.65] font-mono`}>
-      {code.split("\n").map((line, li) => (
-        <div key={li} className="flex min-h-[1.65em]">
-          {showLineNumbers && <span className="select-none w-8 text-right pr-4 text-[#3a342e] shrink-0 text-xs leading-[1.65]">{li + 1}</span>}
-          <span className={wrap ? "flex-1 whitespace-pre-wrap break-words" : "flex-1 whitespace-pre"}>
-            {highlight
-              ? tokenizeLine(line, lang).map((tok, ti) => (
-                  <span key={ti} className={TC[tok.t]}>{tok.v}</span>
-                ))
-              : <span className="text-[#c8c0b7]">{line}</span>}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Code block ────────────────────────────────────────────────────────────────
-
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
-  const { prefs, t } = useUiPreferences();
-  const [copied, setCopied] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
-
-  const copy = useCallback(async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true); setTimeout(() => setCopied(false), 2000);
-  }, [code]);
-
-  // Real client-side download — no backend or file-system access involved,
-  // just a Blob + a throwaway <a download>, same as any "export" button.
-  const saveToFile = useCallback(() => {
-    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const ext = CODE_LANG_EXTENSIONS[lang.toLowerCase()] ?? "txt";
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `snippet.${ext}`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [code, lang]);
-
-  const actions: { label: string; Icon: typeof Copy; onClick: () => void; active?: boolean }[] = [];
-  if (prefs.codeShowCollapseButton) {
-    actions.push({ label: collapsed ? t("codeBlock.expand") : t("codeBlock.collapse"), Icon: collapsed ? ChevronDown : ChevronUp, onClick: () => setCollapsed(c => !c) });
-  }
-  if (prefs.codeShowCopyButton) {
-    actions.push({ label: copied ? t("codeBlock.copied") : t("codeBlock.copy"), Icon: copied ? Check : Copy, onClick: copy, active: copied });
-  }
-  if (prefs.codeShowSaveButton) {
-    actions.push({ label: t("codeBlock.save"), Icon: Save, onClick: saveToFile });
-  }
-
-  return (
-    <div className="mt-3 rounded-xl overflow-hidden border border-white/[0.07] bg-[#0f0e0c]">
-      <div className="flex items-center justify-between px-4 py-2 bg-[#181512] border-b border-white/[0.06]">
-        {prefs.codeShowLanguageBadge ? (
-          <div className="flex items-center gap-2">
-            <Terminal size={11} className="text-[#c4644a]" />
-            <span className="text-[10px] font-mono uppercase tracking-widest text-[#6b5f57]">{lang}</span>
-          </div>
-        ) : <div />}
-        <div className="flex items-center gap-0.5">
-          {actions.map(b => (
-            <button key={b.label} onClick={b.onClick}
-              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors ${
-                b.active ? "text-green-400" : "text-[#6b5f57] hover:text-[#d8d0c7] hover:bg-white/[0.05]"
-              }`}>
-              <b.Icon size={11} />{b.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: "easeInOut" }} className="overflow-hidden">
-            <div className="px-3 py-4 overflow-x-auto [scrollbar-width:thin]">
-              <SyntaxHighlight code={code} lang={lang} fontSize={prefs.codeFontSize} wrap={prefs.codeLineWrap}
-                highlight={prefs.codeSyntaxHighlighting} showLineNumbers={prefs.codeShowLineNumbers} />
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 // ─── Attachment chip (inside messages and composer) ────────────────────────────
 
 const OCR_STATUS_LABEL: Record<OcrStatus, { text: string; color: string }> = {
@@ -797,49 +656,6 @@ function FeedbackRow({ content, messageId, speech, conversationId, isLatestAssis
 
 // ─── Message ───────────────────────────────────────────────────────────────────
 
-interface MessageSegment {
-  type: "text" | "code";
-  content: string;
-  lang?: string;
-}
-
-/**
- * Defensive repair for malformed fences where the newline after the
- * language tag was lost upstream (e.g. "```bash #!/bin/bash ...", all on one
- * line) — inserts the missing newline so the fence parses as code instead of
- * flattening into plain text. The real fix is that this shouldn't happen
- * upstream; this is a safety net, not the primary fix.
- */
-function repairMalformedFences(text: string): string {
-  return text.replace(/```(\w+)[ \t]+(?=\S)/g, "```$1\n");
-}
-
-/**
- * Splits assistant message content into alternating text/code segments so
- * fenced code blocks (```lang ... ```) render through the syntax-highlighted
- * CodeBlock component instead of being dumped as raw text. Plain text
- * segments still need `whitespace-pre-wrap` at render time — this function
- * only splits, it doesn't touch whitespace itself.
- */
-function parseMessageSegments(content: string): MessageSegment[] {
-  const repaired = repairMalformedFences(content);
-  const segments: MessageSegment[] = [];
-  const fenceRe = /```(\w*)\n?([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = fenceRe.exec(repaired)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ type: "text", content: repaired.slice(lastIndex, match.index) });
-    }
-    segments.push({ type: "code", lang: match[1] || "text", content: match[2].replace(/\n$/, "") });
-    lastIndex = fenceRe.lastIndex;
-  }
-  if (lastIndex < repaired.length) {
-    segments.push({ type: "text", content: repaired.slice(lastIndex) });
-  }
-  return segments.length > 0 ? segments : [{ type: "text", content: repaired }];
-}
-
 interface MessageBubbleProps {
   message: Message;
   index: number;
@@ -879,13 +695,7 @@ function MessageBubble({ message, index, speech, conversationId, isLatestAssista
           </div>
         ) : (
           <div className="w-full">
-            {parseMessageSegments(message.content).map((seg, i) =>
-              seg.type === "code" ? (
-                <CodeBlock key={i} lang={seg.lang ?? "text"} code={seg.content} />
-              ) : seg.content.trim() ? (
-                <p key={i} className="text-sm text-[#c8c0b7] leading-relaxed whitespace-pre-wrap">{seg.content}</p>
-              ) : null,
-            )}
+            <MessageCodeContent content={message.content} filename={message.codeFilename} />
             <FeedbackRow
               content={message.content}
               messageId={message.id}
@@ -2234,6 +2044,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
           attachments: storedAttachmentsFromMessage(m),
           status: (m.metadata.status === "processing" || m.metadata.status === "failed" || m.metadata.status === "completed") ? m.metadata.status : undefined,
           error: typeof m.metadata.error === "string" ? m.metadata.error : null,
+          codeFilename: typeof m.metadata.filename === "string" ? m.metadata.filename : typeof m.metadata.code_filename === "string" ? m.metadata.code_filename : undefined,
         })));
       })
       .catch(() => {
@@ -5007,6 +4818,7 @@ function AppShell() {
   } = useConversations();
 
   const activeConversation = conversations.find(c => c.id === activeConversationId);
+  const finishSplash = useCallback(() => setAppView("main"), []);
 
   // Startup page (Settings Pass 2) — applied exactly once, right after the
   // real settings have loaded, so it doesn't yank the user back to a
@@ -5054,7 +4866,7 @@ function AppShell() {
       <AnimatePresence mode="wait">
         {appView === "splash" ? (
           <motion.div key="splash" className="absolute inset-0" exit={{ opacity: 0, scale: 0.97 }} transition={{ duration: 0.4, ease: "easeIn" }}>
-            <SplashScreen onDone={() => setAppView("main")} />
+            <SplashScreen onDone={finishSplash} />
           </motion.div>
         ) : (
           <motion.div key="main" className="absolute inset-0 flex bg-[#1a1714]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>

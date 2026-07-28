@@ -7,7 +7,7 @@
 // online/offline indicator. Backend lifecycle belongs to the modular core
 // and is intentionally not controlled from the desktop shell.
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, session, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, Menu, Tray, nativeImage, session, ipcMain, screen, dialog } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -240,6 +240,33 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("siena:window:close", (event) => senderWindow(event)?.close());
   ipcMain.handle("siena:window:is-maximized", (event) => senderWindow(event)?.isMaximized() ?? false);
+  ipcMain.handle("siena:code:save", async (event, payload) => {
+    const win = senderWindow(event);
+    if (!win || !payload || typeof payload !== "object") throw new TypeError("Invalid code save request");
+    const { content, suggestedName, language } = payload;
+    if (typeof content !== "string" || Buffer.byteLength(content, "utf8") > 10 * 1024 * 1024) {
+      throw new TypeError("Code content must be UTF-8 text smaller than 10 MiB");
+    }
+    const rawName = typeof suggestedName === "string" ? path.basename(suggestedName) : "code.txt";
+    const safeName = rawName
+      .replace(/^\.+/, "")
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      .trim()
+      .slice(0, 120) || "code.txt";
+    const extension = path.extname(safeName).slice(1).replace(/[^a-z0-9]/gi, "").slice(0, 10) || "txt";
+    const result = await dialog.showSaveDialog(win, {
+      title: "Save code",
+      defaultPath: safeName,
+      showOverwriteConfirmation: true,
+      filters: [
+        { name: typeof language === "string" ? `${language.toUpperCase()} source` : "Source code", extensions: [extension] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return { saved: false, canceled: true };
+    await fs.promises.writeFile(result.filePath, content, { encoding: "utf8", flag: "w" });
+    return { saved: true, canceled: false, filename: path.basename(result.filePath) };
+  });
 
   // Mic recording (Phase 2 STT UI, HANDOFF_v2.md) needs getUserMedia({audio:true})
   // to work from the renderer. Electron auto-approves every permission
@@ -268,6 +295,7 @@ app.whenReady().then(() => {
   // and asserted from an automated Electron smoke run. Never set in normal
   // use — without the env var this block does nothing at all.
   if (process.env.SIENA_SHELL_DEBUG === "1") {
+    mainWindow?.webContents.setBackgroundThrottling(false);
     global.__sienaShellDebug = {
       showWindow,
       hideToTray,

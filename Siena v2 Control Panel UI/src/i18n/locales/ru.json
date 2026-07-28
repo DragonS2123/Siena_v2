@@ -63,6 +63,8 @@
   "codeBlock.collapse": "свернуть",
   "codeBlock.expand": "развернуть",
   "codeBlock.save": "сохранить",
+  "codeBlock.openExpanded": "развернуть",
+  "codeBlock.closeExpanded": "закрыть",
 
   "chat.placeholder.default": "Спросите Сиену о чём угодно…",
   "chat.placeholder.thinking": "Сиена отвечает…",

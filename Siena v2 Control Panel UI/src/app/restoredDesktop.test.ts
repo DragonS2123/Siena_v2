@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const appSource = readFileSync(resolve(__dirname, "App.tsx"), "utf8");
 const electronSource = readFileSync(resolve(__dirname, "../../electron/main.cjs"), "utf8");
+const codeViewerSource = readFileSync(resolve(__dirname, "CodeViewer.tsx"), "utf8");
 
 describe("restored original Desktop surface", () => {
   it("keeps the original core pages and panels", () => {
@@ -12,9 +13,11 @@ describe("restored original Desktop surface", () => {
     }
     expect(appSource).toContain("function Composer(");
     expect(appSource).toContain("function MessageBubble(");
-    expect(appSource).toContain("function parseMessageSegments(");
-    expect(appSource).toContain("function CodeBlock(");
+    expect(appSource).toContain('import { MessageCodeContent } from "./CodeViewer"');
+    expect(codeViewerSource).toContain("export function parseMessageSegments(");
+    expect(codeViewerSource).toContain("export function CodeViewer(");
     expect(appSource).toContain("function DesktopTitlebar(");
+    expect(appSource).toContain('<SplashScreen onDone={finishSplash} />');
   });
 
   it("does not expose removed subsystem navigation or sidebar cards", () => {
@@ -31,5 +34,7 @@ describe("restored original Desktop surface", () => {
     expect(electronSource).toContain("getNormalBounds()");
     expect(electronSource).toContain("window-state.json");
     expect(electronSource).toContain("frame: false");
+    expect(electronSource).toContain('ipcMain.handle("siena:code:save"');
+    expect(electronSource).toContain("showOverwriteConfirmation: true");
   });
 });

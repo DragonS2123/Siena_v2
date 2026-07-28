@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld("sienaDesktop", {
   toggleMaximize: () => ipcRenderer.invoke("siena:window:toggle-maximize"),
   close: () => ipcRenderer.invoke("siena:window:close"),
   isMaximized: () => ipcRenderer.invoke("siena:window:is-maximized"),
+  saveCodeFile: (request) => ipcRenderer.invoke("siena:code:save", request),
   onMaximizedChange: (listener) => {
     const handler = (_event, maximized) => listener(Boolean(maximized));
     ipcRenderer.on("siena:window:maximized-change", handler);

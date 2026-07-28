@@ -63,6 +63,8 @@
   "codeBlock.collapse": "collapse",
   "codeBlock.expand": "expand",
   "codeBlock.save": "save",
+  "codeBlock.openExpanded": "expand",
+  "codeBlock.closeExpanded": "close",
 
   "chat.placeholder.default": "Ask Siena anything…",
   "chat.placeholder.thinking": "Siena is responding…",
