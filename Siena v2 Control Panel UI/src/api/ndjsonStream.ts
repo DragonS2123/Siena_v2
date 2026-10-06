@@ -1,8 +1,11 @@
 export type StreamGenerationStatus =
+  | "generating"
   | "thinking"
   | "answering"
   | "continuing"
+  | "validating"
   | "completed"
+  | "incomplete"
   | "length_limited"
   | "failed"
   | "cancelled"
@@ -24,6 +27,9 @@ export interface ChatStreamEvent {
   assistant_message_id?: string;
   conversation_id?: string;
   model_used?: string;
+  requested_role?: string;
+  selection_reason?: string;
+  settings_revision?: number;
   attachments?: unknown[];
   status?: StreamGenerationStatus;
   done_reason?: string | null;

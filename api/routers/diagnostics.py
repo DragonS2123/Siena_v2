@@ -17,6 +17,8 @@ def runtime_status(app: Runtime = Depends(runtime)) -> dict:
         "ollama": {"available": catalog["available"], "error": catalog["error"]},
         "registered_tools": [{"name": name} for name in app.registry.names()],
         "model_roles": app.roles.describe(catalog),
+        "effective_settings": app.settings.current().as_dict(),
+        "settings_revision": app.settings.current().revision,
         "paths": {
             "conversations": str(config.CONVERSATIONS_DB_PATH),
             "attachments": str(config.ATTACHMENTS_STORAGE_ROOT),
@@ -33,9 +35,18 @@ def tools(app: Runtime = Depends(runtime)) -> dict:
 def diagnostics(app: Runtime = Depends(runtime)) -> dict:
     catalog = app.catalog.refresh()
     assignments = app.roles.describe(catalog)
+    recent_model_calls = [
+        event for event in app.trace.recent(500)
+        if str(event.get("event", "")).startswith("model.")
+    ][-50:]
+    snapshot = app.settings.current()
     return {
         "ollama_available": catalog["available"],
         "missing_models": [item for item in assignments if item["missing"]],
+        "model_roles": assignments,
+        "effective_settings": snapshot.as_dict(),
+        "settings_revision": snapshot.revision,
+        "recent_model_calls": recent_model_calls,
         "stt_available": app.stt.is_available(),
         "stt_error": app.stt.unavailable_reason(),
         "tts_available": app.tts.is_available(),

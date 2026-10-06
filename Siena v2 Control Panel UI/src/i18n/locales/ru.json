@@ -1,4 +1,9 @@
 {
+  "chat.mode.label": "Режим модели",
+  "chat.mode.auto": "Авто",
+  "chat.mode.chat": "Чат",
+  "chat.mode.code": "Код",
+  "chat.mode.deep": "Глубокий",
   "nav.chat": "Чат",
   "nav.toolTrace": "Трассировка",
   "nav.shortMemory": "Кратк. память",
@@ -123,6 +128,19 @@
   "settings.model.codeModel": "Модель для кода",
   "settings.model.manualSwitchNote": "Ручное переключение активной модели чата находится на экране «Модели» и проверяется через /api/models/active.",
   "settings.model.generationDefaults": "Параметры генерации",
+  "settings.model.chatOutputTokens": "Токены ответа чата",
+  "settings.model.codeOutputTokens": "Токены ответа для кода",
+  "settings.model.temperature": "Температура",
+  "settings.model.continuation": "Автоматическое продолжение",
+  "settings.model.autoContinue": "Автоматически продолжать ответы",
+  "settings.model.maxRounds": "Максимум раундов продолжения",
+  "settings.model.maxTotalTokens": "Общий лимит токенов генерации",
+  "settings.model.continuationTimeout": "Общий таймаут продолжения (секунды)",
+  "settings.model.overlapWindow": "Окно поиска повторов",
+  "settings.model.repairRounds": "Раунды исправления структуры",
+  "settings.runtimeState.dirty": "Есть несохранённые изменения",
+  "settings.runtimeState.saved": "Сохранено и применено · revision {{revision}}",
+  "settings.runtimeState.restartRequired": "Сохранено · требуется перезапуск сервиса",
   "settings.model.contextWindow": "Окно контекста",
   "settings.model.maxTokens": "Макс. токенов",
   "settings.model.maxContextMessages": "Макс. сообщений в контексте",
@@ -512,3 +530,4 @@
   "remote.state.failed": "Сбой",
   "remote.state.stopping": "Остановка…"
 }
+

@@ -353,10 +353,34 @@ class ConversationStore:
         except sqlite3.Error as exc:
             raise SienaInfraError(f"Message checkpoint failed for {message_id}: {exc}") from exc
 
+    def list_active_stream_messages(self) -> list[dict[str, Any]]:
+        """Return crash-left generation rows before recovery changes their status."""
+        active = {"pending", "thinking", "answering", "generating", "continuing", "validating"}
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, conversation_id, content, model, metadata_json "
+                    "FROM conversation_messages WHERE role = 'assistant'"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise SienaInfraError(f"Interrupted message scan failed: {exc}") from exc
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if metadata.get("status") in active:
+                result.append({
+                    "id": row["id"],
+                    "conversation_id": row["conversation_id"],
+                    "content": row["content"] or "",
+                    "model": row["model"],
+                    "metadata": metadata,
+                })
+        return result
+
     def recover_interrupted_messages(self) -> int:
         """Turn crash-left active stream rows into honest interrupted partials."""
         recovered = 0
-        active = {"pending", "thinking", "answering", "continuing"}
+        active = {"pending", "thinking", "answering", "generating", "continuing", "validating"}
         try:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -366,7 +390,12 @@ class ConversationStore:
                     metadata = json.loads(row["metadata_json"] or "{}")
                     if metadata.get("status") not in active:
                         continue
-                    metadata.update({"status": "interrupted", "incomplete": True})
+                    metadata.update({
+                        "status": "interrupted",
+                        "incomplete": True,
+                        "resume_available": True,
+                        "recovery_reason": "backend_restart",
+                    })
                     conn.execute(
                         "UPDATE conversation_messages SET metadata_json = ? WHERE id = ?",
                         (json.dumps(metadata, ensure_ascii=False), row["id"]),

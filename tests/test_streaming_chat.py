@@ -41,7 +41,7 @@ def _prepare(client, monkeypatch):
     monkeypatch.setattr(
         runtime.catalog,
         "refresh",
-        lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}]},
+        lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}, {"name": "qwen2.5-coder:7b"}]},
     )
     return runtime, conversation_id
 
@@ -188,7 +188,7 @@ def test_max_auto_continuations_stops_chain(client, monkeypatch):
         json={"conversation_id": conversation_id, "message": "HTML код"},
     ))
     assert calls == 2
-    assert events[-1]["status"] == "length_limited"
+    assert events[-1]["status"] == "incomplete"
     assert events[-1]["continuation_count"] == 1
 
 

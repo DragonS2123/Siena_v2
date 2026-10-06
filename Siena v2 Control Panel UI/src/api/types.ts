@@ -1,3 +1,5 @@
+export type ChatMode = "auto" | "chat" | "code" | "deep";
+
 // Typed shapes mirroring the Siena_v2 Python backend (api/server.py).
 // Kept in sync manually — there is no shared schema generation yet.
 
@@ -295,6 +297,27 @@ export interface MemoryLongSaveResponse {
 }
 
 export interface SettingsPayload {
+  settings_revision: number;
+  applied: string[];
+  restart_required: string[];
+  errors: string[];
+  classification: Record<string, "live" | "restart-required" | string>;
+  model_roles: Record<string, string>;
+  context_size: number;
+  chat_output_tokens: number;
+  code_output_tokens: number;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  repeat_penalty: number;
+  seed: number | null;
+  auto_continue_enabled: boolean;
+  auto_continue_max_rounds: number;
+  auto_continue_max_total_tokens: number;
+  auto_continue_timeout_seconds: number;
+  auto_continue_overlap_window: number;
+  auto_continue_repair_rounds: number;
+  auto_resume_interrupted: boolean;
   primary_model: string;
   code_model: string;
   ollama_host: string;
@@ -700,3 +723,5 @@ export interface ModelLifecycleUnloadResponse {
   target: ModelLifecycleUnloadTarget;
   results: ModelLifecycleUnloadResult[];
 }
+
+

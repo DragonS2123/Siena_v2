@@ -4,6 +4,8 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from api.dependencies import runtime
@@ -25,6 +27,8 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     conversation_id: str
     model_override: str | None = None
+    mode: Literal["auto", "chat", "code", "deep"] = "auto"
+    review_code: bool = False
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
 
 
@@ -38,6 +42,8 @@ async def chat_stream(payload: ChatRequest, request: Request, app: Runtime = Dep
             payload.conversation_id,
             payload.message.strip(),
             model_override=payload.model_override,
+            explicit_mode=payload.mode,
+            review_code=payload.review_code,
             attachments=[attachment.model_dump() for attachment in payload.attachments],
         )
         try:
@@ -65,6 +71,7 @@ async def chat(payload: ChatRequest, app: Runtime = Depends(runtime)) -> dict:
             payload.conversation_id,
             payload.message.strip(),
             model_override=payload.model_override,
+            explicit_mode=payload.mode,
             attachments=[attachment.model_dump() for attachment in payload.attachments],
         )
     except KeyError as exc:
@@ -73,3 +80,5 @@ async def chat(payload: ChatRequest, app: Runtime = Depends(runtime)) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise unavailable("chat", str(exc)) from exc
+
+

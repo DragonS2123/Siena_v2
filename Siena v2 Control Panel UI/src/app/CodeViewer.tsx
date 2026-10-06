@@ -741,28 +741,12 @@ function TextContent({ text }: { text: string }) {
   );
 }
 
-export function GenerationLimitNotice({
-  doneReason,
-  disabled = false,
-  onContinue,
-}: {
-  doneReason?: string | null;
-  disabled?: boolean;
-  onContinue: () => void;
-}) {
+export function GenerationLimitNotice({ doneReason }: { doneReason?: string | null }) {
   const { t } = useUiPreferences();
   if (doneReason !== "length") return null;
   return (
     <div className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] px-3 py-2 text-[11px] text-amber-300" role="status">
       <div>{t("chat.lengthWarning")}</div>
-      <button
-        type="button"
-        className="mt-2 rounded-md border border-amber-300/25 px-2.5 py-1 text-[10px] font-medium hover:bg-amber-300/10 disabled:opacity-40"
-        disabled={disabled}
-        onClick={onContinue}
-      >
-        {t("chat.continueGeneration")}
-      </button>
     </div>
   );
 }

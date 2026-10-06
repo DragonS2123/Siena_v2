@@ -43,4 +43,13 @@ def assign_role(role: str, payload: RoleAssignment, app: Runtime = Depends(runti
         assignments = app.roles.assign(role, payload.model, catalog)
     except ModelRoleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"model_roles": assignments, "roles": app.roles.describe(catalog)}
+    snapshot = app.settings.current()
+    return {
+        "model_roles": assignments,
+        "roles": app.roles.describe(catalog),
+        "settings_revision": snapshot.revision,
+        "applied": ["model_roles"],
+        "restart_required": [],
+        "errors": [],
+    }
+

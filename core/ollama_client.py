@@ -26,6 +26,7 @@ class OllamaClient:
         think: bool = False,
         num_ctx: int | None = None,
         num_predict: int | None = None,
+        generation_options: dict | None = None,
     ):
         self._client = ollama.Client(host=host, timeout=timeout)
         self._async_client = ollama.AsyncClient(
@@ -40,6 +41,7 @@ class OllamaClient:
         self._think = think
         self._num_ctx = num_ctx
         self._num_predict = num_predict
+        self._generation_options = dict(generation_options or {})
 
     @property
     def num_ctx(self) -> int | None:
@@ -57,7 +59,7 @@ class OllamaClient:
     ):
         """Yield raw Ollama ChatResponse chunks with stream=true."""
         target_model = model or self._model
-        options: dict = {}
+        options: dict = dict(self._generation_options)
         if self._num_ctx is not None:
             options["num_ctx"] = self._num_ctx
         if self._num_predict is not None:
@@ -105,7 +107,7 @@ class OllamaClient:
         сбой Runtime, спрашивать модель не у кого (ARCHITECTURE.md, раздел 7.3).
         """
         target_model = model or self._model
-        options: dict = {}
+        options: dict = dict(self._generation_options)
         if self._num_ctx is not None:
             options["num_ctx"] = self._num_ctx
         if self._num_predict is not None:
@@ -129,3 +131,5 @@ class OllamaClient:
             ) from exc
 
         return response.model_dump(exclude_none=True)
+
+

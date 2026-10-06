@@ -10,12 +10,16 @@ import type { SettingsPayload } from "../api/types";
 // just an invalidation ping.
 export const SETTINGS_UPDATED_EVENT = "siena:settings-updated";
 
+export type SettingsSaveState = "idle" | "dirty" | "saving" | "saved" | "error" | "restart_required";
+
 interface UseSettingsResult {
   settings: SettingsPayload | null;
   loading: boolean;
   saving: boolean;
   error: string | null;
   saveError: string | null;
+  saveState: SettingsSaveState;
+  markDirty: () => void;
   refresh: () => Promise<void>;
   save: (update: Partial<SettingsPayload>) => Promise<boolean>;
 }
@@ -26,6 +30,7 @@ export function useSettings(): UseSettingsResult {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SettingsSaveState>("idle");
 
   const refresh = useCallback(async () => {
     try {
@@ -41,20 +46,22 @@ export function useSettings(): UseSettingsResult {
 
   const save = useCallback(async (update: Partial<SettingsPayload>) => {
     setSaving(true);
+    setSaveState("saving");
     setSaveError(null);
     try {
       const data = await sienaClient.updateSettings(update);
       setSettings(data);
+      setSaveState(data.restart_required.length > 0 ? "restart_required" : "saved");
       window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
       return true;
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to save settings");
+      setSaveState("error");
       return false;
     } finally {
       setSaving(false);
     }
   }, []);
-
   useEffect(() => {
     refresh();
     // Refetch when any other useSettings() instance saves — see
@@ -63,5 +70,8 @@ export function useSettings(): UseSettingsResult {
     return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, refresh);
   }, [refresh]);
 
-  return { settings, loading, saving, error, saveError, refresh, save };
+  const markDirty = useCallback(() => setSaveState("dirty"), []);
+
+  return { settings, loading, saving, error, saveError, saveState, markDirty, refresh, save };
 }
+

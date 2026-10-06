@@ -76,6 +76,8 @@ class QwenVisionService:
             prompt = f"{_DEFAULT_VISION_PROMPT}\n\nUser's own question about the image: {user_prompt.strip()}"
 
         start = time.monotonic()
+        if self._logger is not None:
+            self._logger.event("model.request.started", requested_role="vision", resolved_model=self._model)
         try:
             response = self._client.chat(
                 model=self._model,
@@ -92,4 +94,14 @@ class QwenVisionService:
         elapsed_sec = round(time.monotonic() - start, 3)
         result = response.model_dump(exclude_none=True)
         text = (result.get("message") or {}).get("content", "") or ""
+        if self._logger is not None:
+            self._logger.event(
+                "model.request.completed",
+                requested_role="vision",
+                resolved_model=self._model,
+                ollama_model=str(result.get("model") or self._model),
+                done_reason=result.get("done_reason"),
+                generated_tokens=int(result.get("eval_count") or 0),
+                elapsed_ms=round(elapsed_sec * 1000),
+            )
         return {"text": text.strip(), "elapsed_sec": elapsed_sec}

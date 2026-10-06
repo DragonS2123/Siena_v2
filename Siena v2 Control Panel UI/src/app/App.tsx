@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 
 import { sienaClient, API_BASE_URL } from "../api/sienaClient";
-import type { ChatTurnStatus, ConversationDetail, ResourcesStatusResponse, RuntimeStatus, SettingsPayload, StoredAttachmentMetadata, TraceEvent, VoiceProfile } from "../api/types";
+import type { ChatMode, ChatTurnStatus, ConversationDetail, ResourcesStatusResponse, RuntimeStatus, SettingsPayload, StoredAttachmentMetadata, TraceEvent, VoiceProfile } from "../api/types";
 import { fromStoredAttachment, useChat, type ChatTurn, type SendResult } from "../hooks/useChat";
 import { useConversations } from "../hooks/useConversations";
 import { useInsights, type InsightStatusFilter } from "../hooks/useInsights";
@@ -107,6 +107,9 @@ interface Message {
   doneReason?: string | null;
   incomplete?: boolean;
   configuredNumPredict?: number | null;
+  modelUsed?: string | null;
+  requestedRole?: string | null;
+  selectionReason?: string | null;
 }
 
 // ─── Nav config ────────────────────────────────────────────────────────────────
@@ -354,13 +357,15 @@ function SliderRow({ label, min, max, defaultValue, unit }: { label: string; min
   );
 }
 
-function NumberSetting({ label, value, onChange, min }: { label: string; value: number; onChange: (value: number) => void; min?: number }) {
+function NumberSetting({ label, value, onChange, min, max, step }: { label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-xs text-[#8a7f75]">{label}</span>
       <input
         type="number"
         min={min}
+        max={max}
+        step={step}
         value={value}
         onChange={e => onChange(Number(e.target.value))}
         className="w-28 bg-[#2a2520] border border-white/[0.07] text-xs text-[#c8c0b7] rounded-lg px-2.5 py-1.5 outline-none text-right font-mono"
@@ -706,10 +711,9 @@ interface MessageBubbleProps {
   retryDisabled: boolean;
   retryError?: string;
   onRetry: (messageId: string) => void;
-  onContinue: (messageId: string) => void;
 }
 
-function MessageBubble({ message, index, speech, conversationId, isLatestAssistant, retrying, retryDisabled, retryError, onRetry, onContinue }: MessageBubbleProps) {
+function MessageBubble({ message, index, speech, conversationId, isLatestAssistant, retrying, retryDisabled, retryError, onRetry }: MessageBubbleProps) {
   const { prefs } = useUiPreferences();
   const isUser = message.role === "user";
   return (
@@ -738,11 +742,13 @@ function MessageBubble({ message, index, speech, conversationId, isLatestAssista
           <div className="w-full">
             <ThinkingPanel thinking={message.thinking ?? ""} status={message.status} hasContent={message.content.length > 0} />
             <MessageCodeContent content={message.content} filename={message.codeFilename} />
-            <GenerationLimitNotice
-              doneReason={message.doneReason}
-              disabled={!isLatestAssistant || retryDisabled}
-              onContinue={() => onContinue(message.id)}
-            />
+            {message.modelUsed && (
+              <div className="mb-2 text-[10px] text-[#4b4540] font-mono" title={message.selectionReason ?? undefined}>
+                {message.requestedRole ?? "chat"} · {message.modelUsed}
+              </div>
+            )}
+            <GenerationLimitNotice doneReason={message.doneReason} />
+
             <FeedbackRow
               content={message.content}
               messageId={message.id}
@@ -954,11 +960,12 @@ function VoiceStateText({ state }: { state: VoiceState }) {
 const MAX_COMPOSER_H = 200;
 
 function Composer({ onSend, onCancel, thinking, speech, conversationId }: {
-  onSend: (text: string, attachments: Attachment[]) => Promise<SendResult>; onCancel: () => void; thinking: boolean;
+  onSend: (text: string, attachments: Attachment[], mode?: ChatMode) => Promise<SendResult>; onCancel: () => void; thinking: boolean;
   speech: UseSpeechResult; conversationId: string | null;
 }) {
   const { t } = useUiPreferences();
   const [value, setValue] = useState("");
+  const [mode, setMode] = useState<ChatMode>("auto");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchorRect, setMenuAnchorRect] = useState<DOMRect | null>(null);
@@ -1276,7 +1283,7 @@ function Composer({ onSend, onCancel, thinking, speech, conversationId }: {
     // racing each other. Stop Conversation Mode first to type/send by hand.
     if (conversation.active) return;
     if ((!value.trim() && attachments.length === 0) || thinking) return;
-    onSend(value.trim(), attachments);
+    onSend(value.trim(), attachments, mode);
     setValue("");
     setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -1510,7 +1517,21 @@ function Composer({ onSend, onCancel, thinking, speech, conversationId }: {
       </motion.div>
 
       <div className="flex justify-between mt-1.5 px-1">
-        <span className="text-[9px] text-[#2e2a26]">⏎ send · ⇧⏎ newline · ⌘V paste image</span>
+        <div className="flex items-center gap-2">
+          <select
+            value={mode}
+            onChange={event => setMode(event.target.value as ChatMode)}
+            disabled={thinking || conversation.active}
+            aria-label={t("chat.mode.label")}
+            className="bg-transparent text-[10px] text-[#6b5f57] outline-none disabled:opacity-40"
+          >
+            <option value="auto">{t("chat.mode.auto")}</option>
+            <option value="chat">{t("chat.mode.chat")}</option>
+            <option value="code">{t("chat.mode.code")}</option>
+            <option value="deep">{t("chat.mode.deep")}</option>
+          </select>
+          <span className="text-[9px] text-[#2e2a26]">⏎ send · ⇧⏎ newline · ⌘V paste image</span>
+        </div>
         <span className="text-[9px] text-[#2e2a26]">
           {conversation.active
             ? "Conversation mode · experimental"
@@ -2107,6 +2128,9 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
           doneReason: typeof m.metadata.done_reason === "string" ? m.metadata.done_reason : null,
           incomplete: m.metadata.incomplete === true,
           configuredNumPredict: typeof m.metadata.configured_num_predict === "number" ? m.metadata.configured_num_predict : null,
+          modelUsed: typeof m.metadata.model_used === "string" ? m.metadata.model_used : null,
+          requestedRole: typeof m.metadata.requested_role === "string" ? m.metadata.requested_role : null,
+          selectionReason: typeof m.metadata.selection_reason === "string" ? m.metadata.selection_reason : null,
         })));
       })
       .catch(() => {
@@ -2144,7 +2168,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
   // composer text box — specifically Voice Conversation Mode
   // (useVoiceConversation.ts) — can read the assistant's reply back and
   // speak it, without duplicating any of the actual /api/chat wiring above.
-  const handleSend = useCallback(async (text: string, attachments: Attachment[]): Promise<SendResult> => {
+  const handleSend = useCallback(async (text: string, attachments: Attachment[], mode: ChatMode = "auto"): Promise<SendResult> => {
     if (!activeConversationId) return { turn: null, errorMessage: "No active conversation selected" };
     const targetConversationId = activeConversationId;
     setModelState("thinking");
@@ -2153,6 +2177,7 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
       attachments,
       targetConversationId,
       (conversationId) => activeConversationIdRef.current === conversationId,
+      mode,
     );
     setModelState("idle");
     if (autoSpeak && activeConversationIdRef.current === targetConversationId && result.turn && lastAutoSpokenMessageIdRef.current !== result.turn.id) {
@@ -2212,23 +2237,6 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
     }
   }, [messages, activeConversationId, send, setModelState, autoSpeak, speech]);
 
-  const handleContinue = useCallback(async (assistantMessageId: string) => {
-    const message = messages.find((item) => item.id === assistantMessageId);
-    if (!message || message.role !== "assistant" || message.doneReason !== "length") return;
-    const tail = message.content.slice(-2000);
-    const prompt = [
-      "Продолжи предыдущий ответ ровно с места остановки.",
-      "Не повторяй уже выданный текст. Верни продолжение в новом fenced-блоке того же языка, затем заверши код и закрой fence.",
-      "Конец предыдущего ответа:",
-      "---",
-      tail,
-    ].join("\n");
-    sienaClient.logClientEvent("continue_generation_requested", {
-      message_id: assistantMessageId,
-      previous_content_length: message.content.length,
-    });
-    await handleSend(prompt, []);
-  }, [handleSend, messages]);
 
   return (
     <div className="flex h-full">
@@ -2289,7 +2297,6 @@ function ChatView({ activeConversationId, activeConversationTitle, modelState, s
                   retryDisabled={retryingMessageId !== null || sending}
                   retryError={retryError?.messageId === msg.id ? retryError.message : undefined}
                   onRetry={handleRetry}
-                  onContinue={handleContinue}
                 />
               ))}
               {error && <div className="text-xs text-red-400 px-1 py-2">{error}</div>}
@@ -3457,21 +3464,43 @@ function AppearanceSettings() {
 }
 
 function ModelSettings() {
-  const { settings, loading, saving, error, saveError, save } = useSettings();
+  const { settings, loading, saving, error, saveError, saveState, markDirty, save } = useSettings();
   const { t } = useUiPreferences();
-  const [numCtx, setNumCtx] = useState(settings?.num_ctx ?? 32768);
-  const [numPredict, setNumPredict] = useState(settings?.num_predict ?? 2048);
-  const [maxContextMessages, setMaxContextMessages] = useState(settings?.max_context_messages ?? 40);
-  const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState(settings?.request_timeout_seconds ?? 120);
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [contextSize, setContextSize] = useState(32768);
+  const [chatTokens, setChatTokens] = useState(2048);
+  const [codeTokens, setCodeTokens] = useState(4096);
+  const [maxContextMessages, setMaxContextMessages] = useState(40);
+  const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState(120);
+  const [temperature, setTemperature] = useState(0.8);
+  const [autoContinue, setAutoContinue] = useState(true);
+  const [maxRounds, setMaxRounds] = useState(8);
+  const [maxTotalTokens, setMaxTotalTokens] = useState(32768);
+  const [continuationTimeout, setContinuationTimeout] = useState(1800);
+  const [overlapWindow, setOverlapWindow] = useState(4000);
+  const [repairRounds, setRepairRounds] = useState(2);
 
   useEffect(() => {
     if (!settings) return;
-    setNumCtx(settings.num_ctx);
-    setNumPredict(settings.num_predict);
+    setContextSize(settings.context_size);
+    setChatTokens(settings.chat_output_tokens);
+    setCodeTokens(settings.code_output_tokens);
     setMaxContextMessages(settings.max_context_messages);
     setRequestTimeoutSeconds(settings.request_timeout_seconds);
+    setTemperature(settings.temperature);
+    setAutoContinue(settings.auto_continue_enabled);
+    setMaxRounds(settings.auto_continue_max_rounds);
+    setMaxTotalTokens(settings.auto_continue_max_total_tokens);
+    setContinuationTimeout(settings.auto_continue_timeout_seconds);
+    setOverlapWindow(settings.auto_continue_overlap_window);
+    setRepairRounds(settings.auto_continue_repair_rounds);
   }, [settings]);
+
+  const number = (setter: (value: number) => void) => (value: number) => { setter(value); markDirty(); };
+  const saveLabel = saveState === "dirty" ? t("settings.runtimeState.dirty")
+    : saveState === "saving" ? t("common.saving")
+    : saveState === "saved" ? t("settings.runtimeState.saved", { revision: settings?.settings_revision ?? 0 })
+    : saveState === "restart_required" ? t("settings.runtimeState.restartRequired")
+    : null;
 
   return (<>
     <SectionHeader title={t("settings.model.title")} desc={t("settings.model.desc")} />
@@ -3481,29 +3510,43 @@ function ModelSettings() {
         <div className="space-y-1.5">
           <div className="flex justify-between text-xs"><span className="text-[#4b4540]">{t("settings.model.primaryModel")}</span><span className="text-[#c8c0b7] font-mono">{settings?.primary_model ?? "n/a"}</span></div>
           <div className="flex justify-between text-xs"><span className="text-[#4b4540]">{t("settings.model.codeModel")}</span><span className="text-[#c8c0b7] font-mono">{settings?.code_model ?? "n/a"}</span></div>
-          <div className="text-[10px] text-[#6b5f57]">{t("settings.model.manualSwitchNote")}</div>
+          <div className="flex justify-between text-xs"><span className="text-[#4b4540]">Revision</span><span className="text-[#c8c0b7] font-mono">{settings?.settings_revision ?? 0}</span></div>
         </div>
       )}
     </SettingsCard>
     <SettingsCard title={t("settings.model.generationDefaults")}>
-      <NumberSetting label={t("settings.model.contextWindow")} value={numCtx} onChange={setNumCtx} min={512} />
-      <NumberSetting label={t("settings.model.maxTokens")} value={numPredict} onChange={setNumPredict} min={-1} />
-      <NumberSetting label={t("settings.model.maxContextMessages")} value={maxContextMessages} onChange={setMaxContextMessages} min={1} />
-      <NumberSetting label={t("settings.model.requestTimeout")} value={requestTimeoutSeconds} onChange={setRequestTimeoutSeconds} min={1} />
+      <NumberSetting label={t("settings.model.contextWindow")} value={contextSize} onChange={number(setContextSize)} min={2048} />
+      <NumberSetting label={t("settings.model.chatOutputTokens")} value={chatTokens} onChange={number(setChatTokens)} min={64} />
+      <NumberSetting label={t("settings.model.codeOutputTokens")} value={codeTokens} onChange={number(setCodeTokens)} min={64} />
+      <NumberSetting label={t("settings.model.maxContextMessages")} value={maxContextMessages} onChange={number(setMaxContextMessages)} min={1} />
+      <NumberSetting label={t("settings.model.requestTimeout")} value={requestTimeoutSeconds} onChange={number(setRequestTimeoutSeconds)} min={5} />
+      <NumberSetting label={t("settings.model.temperature")} value={temperature} onChange={number(setTemperature)} min={0} max={2} step={0.1} />
+    </SettingsCard>
+    <SettingsCard title={t("settings.model.continuation")}>
+      <Toggle label={t("settings.model.autoContinue")} checked={autoContinue} onChange={(value) => { setAutoContinue(value); markDirty(); }} disabled={loading || saving} />
+      <NumberSetting label={t("settings.model.maxRounds")} value={maxRounds} onChange={number(setMaxRounds)} min={1} max={64} />
+      <NumberSetting label={t("settings.model.maxTotalTokens")} value={maxTotalTokens} onChange={number(setMaxTotalTokens)} min={256} />
+      <NumberSetting label={t("settings.model.continuationTimeout")} value={continuationTimeout} onChange={number(setContinuationTimeout)} min={30} />
+      <NumberSetting label={t("settings.model.overlapWindow")} value={overlapWindow} onChange={number(setOverlapWindow)} min={100} />
+      <NumberSetting label={t("settings.model.repairRounds")} value={repairRounds} onChange={number(setRepairRounds)} min={0} max={10} />
       {saveError && <div className="text-xs text-red-400">{saveError}</div>}
-      {saveStatus && !saveError && <div className="text-xs text-green-400">{saveStatus}</div>}
+      {saveLabel && !saveError && <div className={`text-xs ${saveState === "dirty" ? "text-amber-400" : "text-green-400"}`}>{saveLabel}</div>}
       <button
-        onClick={async () => {
-          setSaveStatus(null);
-          const ok = await save({
-            num_ctx: numCtx,
-            num_predict: numPredict,
-            max_context_messages: maxContextMessages,
-            request_timeout_seconds: requestTimeoutSeconds,
-          });
-          setSaveStatus(ok ? t("settings.model.savedToBackend") : null);
-        }}
-        disabled={saving || loading}
+        onClick={() => void save({
+          context_size: contextSize,
+          chat_output_tokens: chatTokens,
+          code_output_tokens: codeTokens,
+          max_context_messages: maxContextMessages,
+          request_timeout_seconds: requestTimeoutSeconds,
+          temperature,
+          auto_continue_enabled: autoContinue,
+          auto_continue_max_rounds: maxRounds,
+          auto_continue_max_total_tokens: maxTotalTokens,
+          auto_continue_timeout_seconds: continuationTimeout,
+          auto_continue_overlap_window: overlapWindow,
+          auto_continue_repair_rounds: repairRounds,
+        })}
+        disabled={saving || loading || saveState === "saving"}
         className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[#c4644a]/12 text-[#c4644a] border border-[#c4644a]/20 disabled:opacity-50"
       >
         {saving ? t("common.saving") : t("settings.model.saveButton")}
@@ -3511,7 +3554,6 @@ function ModelSettings() {
     </SettingsCard>
   </>);
 }
-
 const STARTUP_PAGE_LABEL_KEYS: Record<string, string> = { chat: "settings.startup.pageChat", runtime: "settings.startup.pageRuntime", settings: "settings.startup.pageSettings" };
 
 function StartupSettings() {
@@ -5016,3 +5058,5 @@ function AppShell() {
     </div>
   );
 }
+
+

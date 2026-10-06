@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import config
 from core.ollama_client import OllamaClient
+from core.runtime_settings import RuntimeSettingsService
 from memory.candidate_memory_store import CandidateMemoryStore
 from memory.embedding_service import EmbeddingService
 from memory.long_memory_store import LongMemoryStore
@@ -37,11 +38,15 @@ TOOL_NAMES = (
 
 def build_tool_registry(
     logger: Any,
+    settings: RuntimeSettingsService,
     assignments: Callable[[], dict[str, str]],
     installed_models: Callable[[], set[str]],
 ) -> tuple[ToolRegistry, ShortMemoryStore, LongMemoryStore, CandidateMemoryStore]:
-    roles = assignments()
-    embedding = EmbeddingService(config.OLLAMA_HOST, roles["embedding"], logger)
+    embedding = EmbeddingService(
+        lambda: str(settings.current().get("ollama_host")),
+        lambda: assignments()["embedding"],
+        logger,
+    )
     vectors = VectorStore(config.MEMORY_VECTORS_DB_PATH)
     short = ShortMemoryStore(
         config.SHORT_MEMORY_PATH,
@@ -58,6 +63,16 @@ def build_tool_registry(
     )
     candidates = CandidateMemoryStore(config.CANDIDATE_MEMORY_DB_PATH)
 
+    def delegate_client(model: str) -> OllamaClient:
+        snapshot = settings.current()
+        return OllamaClient(
+            str(snapshot.get("ollama_host")),
+            model,
+            int(snapshot.get("request_timeout_seconds")),
+            num_ctx=int(snapshot.get("context_size")),
+            num_predict=int(snapshot.get("chat_output_tokens")),
+        )
+
     registry = ToolRegistry()
     for tool in (
         ShortMemorySaveTool(short, logger),
@@ -67,17 +82,7 @@ def build_tool_registry(
         LongMemorySearchTool(long, logger),
         LongMemoryListTool(long, logger),
         CandidateMemoryCreateTool(candidates, logger),
-        DelegateModelTool(
-            lambda model: OllamaClient(
-                config.OLLAMA_HOST,
-                model,
-                config.DELEGATE_TIMEOUT_SECONDS,
-                num_ctx=config.OLLAMA_NUM_CTX,
-                num_predict=config.OLLAMA_NUM_PREDICT,
-            ),
-            assignments,
-            installed_models,
-        ),
+        DelegateModelTool(delegate_client, assignments, installed_models, logger),
     ):
         registry.register(tool)
     if tuple(registry.names()) != TOOL_NAMES:

@@ -85,7 +85,7 @@ describe("useChat end-to-end stream state", () => {
   });
 
   it("marks the partial assistant turn cancelled when Stop aborts fetch", async () => {
-    vi.spyOn(sienaClient, "openChatStream").mockImplementation(async (_message, _attachments, _id, signal) => {
+    vi.spyOn(sienaClient, "openChatStream").mockImplementation(async (_message, _attachments, _id, _mode, signal) => {
       return new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode(

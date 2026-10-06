@@ -230,16 +230,14 @@ describe("assistant Markdown → original Code Viewer mapping", () => {
 });
 
 describe("length completion status", () => {
-  it("distinguishes done_reason=length and offers continuation", () => {
-    const onContinue = vi.fn();
-    render(<GenerationLimitNotice doneReason="length" onContinue={onContinue} />);
+  it("distinguishes done_reason=length without requiring a continuation button", () => {
+    render(<GenerationLimitNotice doneReason="length" />);
     expect(screen.getByRole("status")).toHaveTextContent("The response stopped at the length limit");
-    fireEvent.click(screen.getByRole("button", { name: "Continue generation" }));
-    expect(onContinue).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Continue generation" })).not.toBeInTheDocument();
   });
 
   it("does not warn for a normal stop", () => {
-    render(<GenerationLimitNotice doneReason="stop" onContinue={vi.fn()} />);
+    render(<GenerationLimitNotice doneReason="stop" />);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

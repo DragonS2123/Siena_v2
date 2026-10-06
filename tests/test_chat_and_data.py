@@ -19,7 +19,7 @@ def test_conversation_crud_and_override(client, monkeypatch):
 def test_chat_turn_persists_messages(client, monkeypatch):
     runtime = client.app.state.runtime
     conversation_id = client.post("/api/conversations", json={}).json()["conversation_id"]
-    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}]})
+    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}, {"name": "qwen2.5-coder:7b"}]})
     monkeypatch.setattr("core.chat_service.run_agent_loop", lambda *_args, **_kwargs: "answer")
     response = client.post("/api/chat", json={"conversation_id": conversation_id, "message": "hello"})
     assert response.status_code == 200
@@ -53,7 +53,7 @@ def test_large_length_limited_answer_round_trips_exactly(client, monkeypatch):
 
     runtime = client.app.state.runtime
     conversation_id = client.post("/api/conversations", json={}).json()["conversation_id"]
-    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}]})
+    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}, {"name": "qwen2.5-coder:7b"}]})
     code = "```html\n" + "\n".join(f"<div>строка {index}</div>" for index in range(500))
     provider_result = AgentResult(
         content=code,
@@ -91,7 +91,7 @@ def test_code_requests_use_persisted_separate_generation_budget(client, monkeypa
         "max_context_messages": 45,
     })
     conversation_id = client.post("/api/conversations", json={}).json()["conversation_id"]
-    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}]})
+    monkeypatch.setattr(runtime.catalog, "refresh", lambda: {"available": True, "models": [{"name": "qwen3.5:9b"}, {"name": "qwen2.5-coder:7b"}]})
     captured = {}
 
     def fake_run(_session, ollama_client, _registry, _logger, _iterations, max_messages):

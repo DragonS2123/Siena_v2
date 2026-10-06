@@ -1,4 +1,9 @@
 {
+  "chat.mode.label": "Model mode",
+  "chat.mode.auto": "Auto",
+  "chat.mode.chat": "Chat",
+  "chat.mode.code": "Code",
+  "chat.mode.deep": "Deep",
   "nav.chat": "Chat",
   "nav.toolTrace": "Tool Trace",
   "nav.shortMemory": "Short Memory",
@@ -123,6 +128,19 @@
   "settings.model.codeModel": "Code model",
   "settings.model.manualSwitchNote": "Manual active chat switching lives in the Models screen and is validated by /api/models/active.",
   "settings.model.generationDefaults": "Generation defaults",
+  "settings.model.chatOutputTokens": "Chat output tokens",
+  "settings.model.codeOutputTokens": "Code output tokens",
+  "settings.model.temperature": "Temperature",
+  "settings.model.continuation": "Automatic continuation",
+  "settings.model.autoContinue": "Continue responses automatically",
+  "settings.model.maxRounds": "Maximum continuation rounds",
+  "settings.model.maxTotalTokens": "Maximum total generation tokens",
+  "settings.model.continuationTimeout": "Total continuation timeout (seconds)",
+  "settings.model.overlapWindow": "Overlap detection window",
+  "settings.model.repairRounds": "Structure repair rounds",
+  "settings.runtimeState.dirty": "Unsaved changes",
+  "settings.runtimeState.saved": "Saved and applied · revision {{revision}}",
+  "settings.runtimeState.restartRequired": "Saved · service restart required",
   "settings.model.contextWindow": "Context window",
   "settings.model.maxTokens": "Max tokens",
   "settings.model.maxContextMessages": "Max context messages",
@@ -512,3 +530,4 @@
   "remote.state.failed": "Failed",
   "remote.state.stopping": "Stopping…"
 }
+

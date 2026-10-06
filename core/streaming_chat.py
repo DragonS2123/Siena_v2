@@ -35,22 +35,67 @@ def open_fence_language(content: str) -> str | None:
     return opened[2] if opened else None
 
 
-def has_incomplete_structure(content: str) -> bool:
-    lowered = content.lower()
-    if open_fence_language(content) is not None:
-        return True
-    if "<!doctype html" in lowered and "</html>" not in lowered:
-        return True
-    if "<script" in lowered and "</script>" not in lowered:
-        return True
-    stripped = content.rstrip()
-    if stripped.startswith(("{", "[")):
-        expected = "}" if stripped.startswith("{") else "]"
-        if not stripped.endswith(expected):
-            return True
+def structure_issues(content: str) -> list[str]:
+    """Return conservative reasons why a code/file response is not safely complete."""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lowered = normalized.lower()
+    issues: list[str] = []
+    language = open_fence_language(normalized)
+    if language is not None:
+        issues.append(f"open_markdown_fence:{language or 'plain'}")
+    if lowered.count("<!doctype") > 1:
+        issues.append("duplicate_doctype")
+    html_end = lowered.find("</html>")
+    if html_end >= 0:
+        trailing = normalized[html_end + len("</html>"):]
+        if re.sub(r"\s*```\s*$", "", trailing).strip():
+            issues.append("content_after_html")
+    if "<!doctype html" in lowered or re.search(r"<html(?:\s|>)", lowered):
+        for tag in ("style", "head", "body", "script", "html"):
+            openings = len(re.findall(rf"<{tag}(?:\s|>)", lowered))
+            closings = lowered.count(f"</{tag}>")
+            if openings > closings:
+                issues.append(f"open_html_tag:{tag}")
+
+    stripped = normalized.rstrip()
+    looks_like_code = bool(
+        language
+        or re.search(r"<!doctype|<script|<style|\b(?:function|class|def)\s+", lowered)
+        or stripped.startswith(("{", "["))
+    )
+    if looks_like_code:
+        stack: list[str] = []
+        pairs = {")": "(", "]": "[", "}": "{"}
+        quote: str | None = None
+        escaped = False
+        scan_source = re.sub(r"(?m)^ {0,3}(?:```+|~~~+)[^\n]*$", "", normalized)
+        for char in scan_source:
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+            if char in {'"', "'", "`"}:
+                quote = char
+            elif char in "([{":
+                stack.append(char)
+            elif char in pairs:
+                if stack and stack[-1] == pairs[char]:
+                    stack.pop()
+        if quote is not None:
+            issues.append(f"open_quote:{quote}")
+        if stack:
+            issues.append("open_delimiters:" + "".join(stack[-20:]))
     if stripped.startswith("<?xml") and not re.search(r"</[^>]+>\s*$", stripped):
-        return True
-    return False
+        issues.append("open_xml_document")
+    return list(dict.fromkeys(issues))
+
+
+def has_incomplete_structure(content: str) -> bool:
+    return bool(structure_issues(content))
 
 
 def response_missing_requested_structure(request: str, content: str) -> bool:
@@ -164,18 +209,43 @@ def _strip_continuation_preamble(incoming: str, language: str | None) -> str:
     return cleaned
 
 
+def _normalized_overlap_view(value: str) -> tuple[str, list[int]]:
+    """Normalize newline/trailing-space variants while retaining source end offsets."""
+    normalized: list[str] = []
+    source_ends: list[int] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char in "\r\n":
+            while normalized and normalized[-1] in " \t":
+                normalized.pop()
+                source_ends.pop()
+            if char == "\r" and index + 1 < len(value) and value[index + 1] == "\n":
+                index += 1
+            normalized.append("\n")
+            source_ends.append(index + 1)
+        else:
+            normalized.append(char)
+            source_ends.append(index + 1)
+        index += 1
+    return "".join(normalized), source_ends
+
+
 def seam_merge(existing: str, incoming: str, window_chars: int = 4000) -> tuple[str, int]:
-    """Return only the non-overlapping continuation and removed overlap size."""
+    """Return only a proven overlap, accepting CRLF/LF and line-end whitespace variants."""
     cleaned = _strip_continuation_preamble(incoming, open_fence_language(existing))
     old_window = existing[-max(0, window_chars):]
     new_window = cleaned[:max(0, window_chars)]
-    maximum = min(len(old_window), len(new_window))
-    overlap = 0
+    old_normalized, _ = _normalized_overlap_view(old_window)
+    new_normalized, incoming_ends = _normalized_overlap_view(new_window)
+    maximum = min(len(old_normalized), len(new_normalized))
+    normalized_overlap = 0
     for size in range(maximum, 0, -1):
-        if old_window[-size:] == new_window[:size]:
-            overlap = size
+        if old_normalized[-size:] == new_normalized[:size]:
+            normalized_overlap = size
             break
-    return cleaned[overlap:], overlap
+    source_overlap = incoming_ends[normalized_overlap - 1] if normalized_overlap else 0
+    return cleaned[source_overlap:], source_overlap
 
 
 async def with_stream_timeouts(
@@ -213,9 +283,11 @@ def continuation_messages(
 ) -> list[dict[str, Any]]:
     """Build a context-safe continuation request, retaining full output when possible."""
     line_count = len(accumulated.splitlines())
+    open_structures = structure_issues(accumulated)
     progress_instruction = (
         CONTINUATION_INSTRUCTION
         + f"\nВ уже накопленном файле {line_count} физических строк. "
+        + f"Открытые или повреждённые структуры: {', '.join(open_structures) or 'нет'}. "
         + "Не добавляй новые возможности сверх исходного запроса. "
         + "Если требуемый минимальный объём уже достигнут, немедленно закончи текущую конструкцию "
         + "и выдай только минимально необходимые закрывающие части style/body/script/html/fence."

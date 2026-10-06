@@ -95,6 +95,8 @@ class GlmOcrService:
         if not self.is_available():
             raise OcrModelNotInstalledError(f"OCR model {self._model!r} is not installed in Ollama")
         started = time.monotonic()
+        if self._logger is not None:
+            self._logger.event("model.request.started", requested_role="ocr", resolved_model=self._model)
         try:
             response = self._client.chat(
                 model=self._model,
@@ -111,4 +113,15 @@ class GlmOcrService:
             raise OcrUnavailableError(f"OCR inference failed: {exc}") from exc
         result = response.model_dump(exclude_none=True)
         text = (result.get("message") or {}).get("content", "") or ""
-        return {"text": text.strip(), "elapsed_sec": round(time.monotonic() - started, 3)}
+        elapsed = round(time.monotonic() - started, 3)
+        if self._logger is not None:
+            self._logger.event(
+                "model.request.completed",
+                requested_role="ocr",
+                resolved_model=self._model,
+                ollama_model=str(result.get("model") or self._model),
+                done_reason=result.get("done_reason"),
+                generated_tokens=int(result.get("eval_count") or 0),
+                elapsed_ms=round(elapsed * 1000),
+            )
+        return {"text": text.strip(), "elapsed_sec": elapsed}

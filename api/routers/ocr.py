@@ -36,7 +36,7 @@ def extract(payload: ImagePayload, app: Runtime = Depends(runtime)) -> dict:
     if len(raw) > config.MAX_IMAGE_ATTACHMENT_BYTES:
         raise HTTPException(status_code=400, detail="image is too large")
     service = GlmOcrService(
-        config.OLLAMA_HOST, app.roles.assignments()["ocr"], config.OCR_TIMEOUT_SECONDS, app.logger
+        str(app.settings.current().get("ollama_host")), app.roles.assignments()["ocr"], config.OCR_TIMEOUT_SECONDS, app.logger
     )
     try:
         result = service.extract_text(encoded)
@@ -44,3 +44,4 @@ def extract(payload: ImagePayload, app: Runtime = Depends(runtime)) -> dict:
         raise unavailable("ocr", str(exc)) from exc
     result["text"] = clean_ocr_text(result["text"])[: config.OCR_MAX_EXTRACTED_CHARS]
     return result
+

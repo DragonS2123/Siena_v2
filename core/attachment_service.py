@@ -14,6 +14,7 @@ from typing import Any
 import config
 from core.image_intent import decide_vision
 from core.model_roles import ModelRoles
+from core.runtime_settings import RuntimeSettingsService
 from ocr.glm_ocr_service import GlmOcrService, clean_ocr_text
 from storage.conversation_store import ConversationStore
 from vision.qwen_vision_service import QwenVisionService
@@ -30,11 +31,13 @@ class AttachmentService:
         root: Path,
         conversations: ConversationStore,
         roles: ModelRoles,
+        settings: RuntimeSettingsService,
         logger: Any,
     ):
         self._root = root
         self._conversations = conversations
         self._roles = roles
+        self._settings = settings
         self._logger = logger
 
     async def process(
@@ -121,19 +124,24 @@ class AttachmentService:
         )
 
     async def _process_image(self, encoded: str, name: str, prompt: str) -> dict[str, Any]:
+        snapshot = self._settings.current()
         roles = self._roles.assignments()
+        host = str(snapshot.get("ollama_host"))
         result: dict[str, Any] = {}
-        ocr = GlmOcrService(config.OLLAMA_HOST, roles["ocr"], config.OCR_TIMEOUT_SECONDS, self._logger)
-        try:
-            raw_ocr = await asyncio.to_thread(ocr.extract_text, encoded)
-            result["ocr_text"] = clean_ocr_text(raw_ocr["text"])[: config.OCR_MAX_EXTRACTED_CHARS]
-            result["ocr_status"] = "completed"
-        except Exception as exc:
-            result.update({"ocr_status": "unavailable", "ocr_error": str(exc)[:300]})
+        if snapshot.get("enable_ocr", True):
+            ocr = GlmOcrService(host, roles["ocr"], config.OCR_TIMEOUT_SECONDS, self._logger)
+            try:
+                raw_ocr = await asyncio.to_thread(ocr.extract_text, encoded)
+                result["ocr_text"] = clean_ocr_text(raw_ocr["text"])[: config.OCR_MAX_EXTRACTED_CHARS]
+                result["ocr_status"] = "completed"
+            except Exception as exc:
+                result.update({"ocr_status": "unavailable", "ocr_error": str(exc)[:300]})
+        else:
+            result["ocr_status"] = "disabled"
 
-        if decide_vision(prompt, True).run_vision:
+        if snapshot.get("enable_image_understanding", True) and decide_vision(prompt, True).run_vision:
             vision = QwenVisionService(
-                config.OLLAMA_HOST, roles["vision"], config.IMAGE_UNDERSTANDING_TIMEOUT_SECONDS, self._logger
+                host, roles["vision"], config.IMAGE_UNDERSTANDING_TIMEOUT_SECONDS, self._logger
             )
             try:
                 described = await asyncio.to_thread(vision.describe_image, encoded, prompt)
@@ -147,3 +155,6 @@ class AttachmentService:
     def _safe_suffix(name: str, kind: str) -> str:
         suffix = Path(name).suffix.lower()
         return suffix if re.fullmatch(r"\.[a-z0-9]{1,10}", suffix) else _EXTENSIONS[kind]
+
+
+

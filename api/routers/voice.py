@@ -66,7 +66,7 @@ async def transcribe(
             raise HTTPException(status_code=400, detail="audio is too long")
         try:
             result = await asyncio.to_thread(
-                app.stt.transcribe_wav, temporary.name, language or config.WHISPER_CPP_LANGUAGE
+                app.stt.transcribe_wav, temporary.name, language or str(app.settings.current().get("stt_language"))
             )
         except Exception as exc:
             raise unavailable("stt", str(exc)) from exc
@@ -110,3 +110,4 @@ def activate_profile(profile_id: str, app: Runtime = Depends(runtime)) -> dict:
         return app.voice_profiles.set_active_profile(profile_id).to_dict()
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+

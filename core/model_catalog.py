@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any
 
 import requests
 
 
 class ModelCatalog:
-    def __init__(self, host: str, timeout: float = 3.0, session: requests.Session | None = None):
-        self._host = host.rstrip("/")
+    def __init__(self, host: str | Callable[[], str], timeout: float = 3.0, session: requests.Session | None = None):
+        self._host = host
         self._timeout = timeout
         self._session = session or requests.Session()
 
+    @property
+    def host(self) -> str:
+        value = self._host() if callable(self._host) else self._host
+        return value.rstrip("/")
+
     def refresh(self) -> dict[str, Any]:
+        host = self.host
         try:
-            tags = self._session.get(f"{self._host}/api/tags", timeout=self._timeout)
+            tags = self._session.get(f"{host}/api/tags", timeout=self._timeout)
             tags.raise_for_status()
             tag_models = tags.json().get("models", [])
             try:
-                loaded_response = self._session.get(f"{self._host}/api/ps", timeout=self._timeout)
+                loaded_response = self._session.get(f"{host}/api/ps", timeout=self._timeout)
                 loaded_response.raise_for_status()
                 loaded = {
                     item.get("name") or item.get("model")
@@ -63,3 +70,5 @@ class ModelCatalog:
             "capabilities": capabilities if isinstance(capabilities, list) else [],
             "loaded": name in loaded,
         }
+
+

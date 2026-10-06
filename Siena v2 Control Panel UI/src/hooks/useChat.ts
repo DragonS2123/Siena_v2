@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readNdjsonStream, type StreamGenerationStatus } from "../api/ndjsonStream";
 import { apiUrl, sienaClient, SienaApiError } from "../api/sienaClient";
-import type { ChatAttachmentPayload, ChatTurnStatus, StoredAttachmentMetadata } from "../api/types";
+import type { ChatAttachmentPayload, ChatMode, ChatTurnStatus, StoredAttachmentMetadata } from "../api/types";
 import type { Attachment } from "../app/App";
 
 export interface ChatTurn {
@@ -18,6 +18,9 @@ export interface ChatTurn {
   segmentCount?: number;
   continuationCount?: number;
   configuredNumPredict?: number | null;
+  modelUsed?: string | null;
+  requestedRole?: string | null;
+  selectionReason?: string | null;
 }
 
 export interface SendResult {
@@ -34,6 +37,7 @@ interface UseChatResult {
     attachments?: Attachment[],
     conversationId?: string | null,
     isConversationActive?: (conversationId: string) => boolean,
+    mode?: ChatMode,
   ) => Promise<SendResult>;
   cancel: () => void;
   reset: (messages?: ChatTurn[]) => void;
@@ -108,6 +112,7 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
     attachments: Attachment[] = [],
     conversationId?: string | null,
     isConversationActive?: (conversationId: string) => boolean,
+    mode: ChatMode = "auto",
   ): Promise<SendResult> => {
     const trimmed = text.trim();
     const fallbackContent = attachments.length > 0 ? `[${attachments.map((a) => a.name).join(", ")}]` : "";
@@ -130,6 +135,9 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
     let segmentCount = 0;
     let continuationCount = 0;
     let configuredNumPredict: number | null = null;
+    let modelUsed: string | null = null;
+    let requestedRole: string | null = null;
+    let selectionReason: string | null = null;
     let streamStarted = false;
     let renderTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -145,6 +153,9 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
       segmentCount,
       continuationCount,
       configuredNumPredict,
+      modelUsed,
+      requestedRole,
+      selectionReason,
     });
     const flush = (immediate = false) => {
       const commit = () => {
@@ -187,6 +198,7 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
         content,
         attachments.map(toPayloadAttachment),
         conversationId,
+        mode,
         controller.signal,
       );
       for await (const event of readNdjsonStream(response.body!)) {
@@ -195,6 +207,9 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
           const previousAssistantId = assistantId;
           assistantId = event.assistant_message_id ?? assistantId;
           userId = event.message_id ?? userId;
+          modelUsed = typeof event.model_used === "string" ? event.model_used : modelUsed;
+          requestedRole = typeof event.requested_role === "string" ? event.requested_role : requestedRole;
+          selectionReason = typeof event.selection_reason === "string" ? event.selection_reason : selectionReason;
           activeAssistantIdRef.current = assistantId;
           const stored = Array.isArray(event.attachments)
             ? (event.attachments as StoredAttachmentMetadata[]).map(fromStoredAttachment)
@@ -266,7 +281,7 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
         return { turn: currentTurn(), errorMessage: null };
       }
       if (!streamStarted && caught instanceof SienaApiError && [404, 405, 501].includes(caught.status)) {
-        const fallback = await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId);
+        const fallback = await sienaClient.sendChatMessage(content, attachments.map(toPayloadAttachment), conversationId, mode);
         assistantId = fallback.assistant_message_id ?? assistantId;
         rawContent = fallback.answer;
         doneReason = fallback.done_reason ?? null;
@@ -300,3 +315,4 @@ export function useChat(initial: ChatTurn[] = []): UseChatResult {
 
   return { messages, sending, error, send, cancel, reset };
 }
+

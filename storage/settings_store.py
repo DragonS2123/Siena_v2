@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
 from config import DEFAULT_MODEL_ROLES
 
 PERSISTABLE_FIELDS = {
+    "settings_revision",
+    "ollama_host",
     "model_roles",
     "max_context_messages",
     "num_ctx",
@@ -22,6 +25,26 @@ PERSISTABLE_FIELDS = {
     "max_total_generation_tokens",
     "continuation_overlap_window_chars",
     "thinking_display",
+    "context_size",
+    "chat_output_tokens",
+    "code_output_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repeat_penalty",
+    "seed",
+    "auto_continue_enabled",
+    "auto_continue_max_rounds",
+    "auto_continue_max_total_tokens",
+    "auto_continue_timeout_seconds",
+    "auto_continue_overlap_window",
+    "auto_continue_repair_rounds",
+    "auto_resume_interrupted",
+    "enable_ocr",
+    "enable_image_understanding",
+    "enable_translator",
+    "enable_code_specialist_auto",
+    "enable_reviewer_explicit",
     "stt_language",
     "tts_provider",
     "interface_language",
@@ -38,6 +61,7 @@ PERSISTABLE_FIELDS = {
 class SettingsStore:
     def __init__(self, path: Path):
         self._path = path
+        self._lock = threading.RLock()
 
     def load(self) -> tuple[dict[str, Any], str | None]:
         if not self._path.exists():
@@ -84,13 +108,23 @@ class SettingsStore:
         return cleaned
 
     def save(self, values: dict[str, Any]) -> dict[str, Any]:
-        current, _ = self.load()
-        current.update({key: value for key, value in values.items() if key in PERSISTABLE_FIELDS})
-        self._write(current)
-        return current
+        with self._lock:
+            current, _ = self.load()
+            current.update({key: value for key, value in values.items() if key in PERSISTABLE_FIELDS})
+            self._write(current)
+            return current
+
+    def replace(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Atomically replace the persisted snapshot after validation."""
+        with self._lock:
+            cleaned = {key: value for key, value in values.items() if key in PERSISTABLE_FIELDS}
+            self._write(cleaned)
+            return cleaned
 
     def _write(self, values: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(".tmp")
         temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self._path)
+
+

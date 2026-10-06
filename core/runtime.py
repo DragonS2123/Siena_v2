@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from core.attachment_service import AttachmentService
 from core.data_migration import migrate_conversations
 from core.model_catalog import ModelCatalog
 from core.model_roles import ModelRoles
+from core.runtime_settings import RuntimeSettingsService
 from core.tool_registry import build_tool_registry
 from core.trace_service import TraceService
 from logging_.logger import SienaLogger
@@ -25,7 +27,7 @@ from voice.whisper_cpp_stt import WhisperCppSTTProvider
 
 @dataclass
 class Runtime:
-    settings: SettingsStore
+    settings: RuntimeSettingsService
     roles: ModelRoles
     catalog: ModelCatalog
     conversations: ConversationStore
@@ -39,6 +41,7 @@ class Runtime:
     voice_profiles: VoiceProfileStore
     logger: SienaLogger
     trace: TraceService
+    background_tasks: list[Any]
 
 
 def _rotate_logs(log_dir: Path) -> None:
@@ -56,12 +59,19 @@ def create_runtime() -> Runtime:
     _rotate_logs(config.LOG_DIR)
     trace = TraceService()
     logger = SienaLogger(config.LOG_DIR, config.LOG_LEVEL, trace.publish)
-    settings = SettingsStore(config.SETTINGS_STORE_PATH)
-    settings.migrate()
+    settings_store = SettingsStore(config.SETTINGS_STORE_PATH)
+    settings_store.migrate()
+    settings = RuntimeSettingsService(settings_store, logger)
+    logger.set_level(str(settings.current().get("log_level")))
+    settings.subscribe(
+        lambda snapshot, changed: logger.set_level(str(snapshot.get("log_level")))
+        if "log_level" in changed else None
+    )
     migrate_conversations(config.CONVERSATIONS_DB_PATH)
     roles = ModelRoles(settings)
-    catalog = ModelCatalog(config.OLLAMA_HOST)
+    catalog = ModelCatalog(lambda: str(settings.current().get("ollama_host")))
     conversations = ConversationStore(config.CONVERSATIONS_DB_PATH, config.CONVERSATION_EVENTS_DEFAULT_LIMIT)
+    interrupted_streams = conversations.list_active_stream_messages()
     recovered_streams = conversations.recover_interrupted_messages()
     if recovered_streams:
         logger.event("stream_messages_recovered", count=recovered_streams)
@@ -69,9 +79,19 @@ def create_runtime() -> Runtime:
     def installed() -> set[str]:
         return {item["name"] for item in catalog.refresh().get("models", [])}
 
-    registry, short, long, candidates = build_tool_registry(logger, roles.assignments, installed)
-    attachments = AttachmentService(config.ATTACHMENTS_STORAGE_ROOT, conversations, roles, logger)
+    registry, short, long, candidates = build_tool_registry(logger, settings, roles.assignments, installed)
+    attachments = AttachmentService(config.ATTACHMENTS_STORAGE_ROOT, conversations, roles, settings, logger)
     chat = ChatService(conversations, roles, catalog, registry, long, attachments, logger, settings)
+    background_tasks: list[Any] = []
+    if interrupted_streams and bool(settings.current().get("auto_resume_interrupted")):
+        try:
+            loop = asyncio.get_running_loop()
+            background_tasks = [
+                loop.create_task(chat.resume_interrupted_message(record), name=f"resume-{record['id']}")
+                for record in interrupted_streams
+            ]
+        except RuntimeError:
+            logger.event("stream_resume_deferred", count=len(interrupted_streams), reason="no_running_event_loop")
     stt = WhisperCppSTTProvider(
         config.WHISPER_CPP_EXE_PATH,
         config.WHISPER_CPP_MODEL_PATH,
@@ -97,9 +117,13 @@ def create_runtime() -> Runtime:
     profiles = VoiceProfileStore(config.VOICE_PROFILES_PATH, logger)
     return Runtime(
         settings, roles, catalog, conversations, registry, short, long,
-        candidates, chat, stt, tts, profiles, logger, trace
+        candidates, chat, stt, tts, profiles, logger, trace, background_tasks
     )
 
 
 def close_runtime(runtime: Runtime) -> None:
+    for task in runtime.background_tasks:
+        if not task.done():
+            task.cancel()
     runtime.tts.stop_server()
+

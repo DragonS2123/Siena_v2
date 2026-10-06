@@ -29,7 +29,7 @@ def status(app: Runtime = Depends(runtime)) -> dict:
 def describe(payload: VisionPayload, app: Runtime = Depends(runtime)) -> dict:
     encoded = payload.image_base64.split(",", 1)[-1]
     service = QwenVisionService(
-        config.OLLAMA_HOST,
+        str(app.settings.current().get("ollama_host")),
         app.roles.assignments()["vision"],
         config.IMAGE_UNDERSTANDING_TIMEOUT_SECONDS,
         app.logger,
@@ -40,3 +40,4 @@ def describe(payload: VisionPayload, app: Runtime = Depends(runtime)) -> dict:
         raise unavailable("vision", str(exc)) from exc
     result["text"] = result["text"][: config.IMAGE_UNDERSTANDING_MAX_OUTPUT_CHARS]
     return result
+

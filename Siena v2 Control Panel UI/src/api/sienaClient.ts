@@ -1,5 +1,6 @@
 import type {
   ChatAttachmentPayload,
+  ChatMode,
   ChatResponse,
   ConversationDetail,
   ConversationsListResponse,
@@ -27,6 +28,27 @@ let activeConversationId: string | null = null;
 const LOCAL_SETTINGS_KEY = "siena.frontend-settings.v2";
 
 const FRONTEND_DEFAULTS: Partial<SettingsPayload> = {
+  settings_revision: 0,
+  applied: [],
+  restart_required: [],
+  errors: [],
+  classification: {},
+  model_roles: {},
+  context_size: 32768,
+  chat_output_tokens: 2048,
+  code_output_tokens: 4096,
+  temperature: 0.8,
+  top_p: 0.9,
+  top_k: 40,
+  repeat_penalty: 1.1,
+  seed: null,
+  auto_continue_enabled: true,
+  auto_continue_max_rounds: 8,
+  auto_continue_max_total_tokens: 32768,
+  auto_continue_timeout_seconds: 1800,
+  auto_continue_overlap_window: 4000,
+  auto_continue_repair_rounds: 2,
+  auto_resume_interrupted: true,
   appearance_theme: "dark",
   accent_color: "sienna",
   ui_font_size: "default",
@@ -61,6 +83,12 @@ const PERSISTED_SETTINGS = new Set([
   "stt_language", "tts_provider", "interface_language", "appearance_theme",
   "ui_font_size", "ui_density", "show_message_timestamps",
   "show_typing_animation", "startup_page", "log_level",
+  "ollama_host", "context_size", "chat_output_tokens", "code_output_tokens",
+  "temperature", "top_p", "top_k", "repeat_penalty", "seed",
+  "auto_continue_enabled", "auto_continue_max_rounds", "auto_continue_max_total_tokens",
+  "auto_continue_timeout_seconds", "auto_continue_overlap_window", "auto_continue_repair_rounds",
+  "auto_resume_interrupted", "enable_ocr", "enable_image_understanding", "enable_translator",
+  "enable_code_specialist_auto", "enable_reviewer_explicit",
 ]);
 
 export function apiUrl(path: string): string {
@@ -111,8 +139,21 @@ function writeLocalSettings(update: Record<string, unknown>): void {
 }
 
 async function settingsPayload(): Promise<SettingsPayload> {
-  const response = await request<{ values: Record<string, unknown> }>("/api/settings");
-  return { ...FRONTEND_DEFAULTS, ...readLocalSettings(), ...response.values } as SettingsPayload;
+  const response = await request<any>("/api/settings");
+  const roles = (response.values?.model_roles ?? {}) as Record<string, string>;
+  return {
+    ...FRONTEND_DEFAULTS,
+    ...readLocalSettings(),
+    ...response.values,
+    settings_revision: Number(response.settings_revision ?? response.values?.settings_revision ?? 0),
+    applied: response.applied ?? [],
+    restart_required: response.restart_required ?? [],
+    errors: response.errors ?? [],
+    classification: response.classification ?? {},
+    model_roles: roles,
+    primary_model: roles.chat ?? "n/a",
+    code_model: roles.coder ?? "n/a",
+  } as SettingsPayload;
 }
 
 async function modelsPayload(refresh = false): Promise<ModelsResponse> {
@@ -153,7 +194,7 @@ export const sienaClient = {
       primary_model: roles.chat ?? "n/a",
       code_model: roles.coder ?? "n/a",
       delegate_models: roles,
-      ollama_host: "http://127.0.0.1:11434",
+      ollama_host: String(settings.ollama_host ?? "n/a"),
       ollama_status: { connected: Boolean(runtime.ollama?.available), models: models.models.map(model => model.name), error: runtime.ollama?.error },
       registered_tools: runtime.registered_tools ?? [],
       max_iterations: 0,
@@ -212,12 +253,13 @@ export const sienaClient = {
     message: string,
     attachments: ChatAttachmentPayload[] = [],
     conversationId?: string | null,
+    mode: ChatMode = "auto",
     signal?: AbortSignal,
   ): Promise<Response> => {
     const response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, conversation_id: conversationId ?? activeConversationId, attachments }),
+      body: JSON.stringify({ message, conversation_id: conversationId ?? activeConversationId, attachments, mode }),
       signal,
     });
     if (!response.ok) {
@@ -227,10 +269,10 @@ export const sienaClient = {
     if (!response.body) throw new SienaApiError(0, "Streaming response has no body");
     return response;
   },
-  sendChatMessage: (message: string, attachments: ChatAttachmentPayload[] = [], conversationId?: string | null) =>
+  sendChatMessage: (message: string, attachments: ChatAttachmentPayload[] = [], conversationId?: string | null, mode: ChatMode = "auto") =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message, conversation_id: conversationId ?? activeConversationId, attachments }),
+      body: JSON.stringify({ message, conversation_id: conversationId ?? activeConversationId, attachments, mode }),
     }),
 
   getRecentTrace: (limit = 100) => request<TraceRecentResponse>(`/api/trace/recent?limit=${limit}`),
@@ -265,14 +307,32 @@ export const sienaClient = {
   updateSettings: async (update: Partial<SettingsPayload>): Promise<SettingsPayload> => {
     const backend: Record<string, unknown> = {};
     const local: Record<string, unknown> = {};
+    let confirmation: any = null;
     for (const [key, value] of Object.entries(update)) {
       (PERSISTED_SETTINGS.has(key) ? backend : local)[key] = value;
     }
-    if (Object.keys(local).length) writeLocalSettings(local);
     if (Object.keys(backend).length) {
-      await request("/api/settings", { method: "POST", body: JSON.stringify(backend) });
+      confirmation = await request<any>("/api/settings", {
+        method: "POST",
+        body: JSON.stringify(backend),
+      });
+      if (confirmation.errors?.length) {
+        throw new SienaApiError(500, confirmation.errors.join("; "));
+      }
+      const confirmedRevision = Number(confirmation.settings_revision ?? 0);
+      if (!Number.isFinite(confirmedRevision) || confirmedRevision < 0 || !confirmation.values) {
+        throw new SienaApiError(500, "Backend did not confirm the effective settings snapshot");
+      }
     }
-    return settingsPayload();
+    if (Object.keys(local).length) writeLocalSettings(local);
+    const effective = await settingsPayload();
+    return confirmation ? {
+      ...effective,
+      settings_revision: Number(confirmation.settings_revision),
+      applied: confirmation.applied ?? [],
+      restart_required: confirmation.restart_required ?? [],
+      errors: confirmation.errors ?? [],
+    } : effective;
   },
 
   getModels: () => modelsPayload(),
@@ -363,3 +423,6 @@ export const sienaClient = {
     };
   },
 };
+
+
+

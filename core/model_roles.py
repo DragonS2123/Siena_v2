@@ -1,11 +1,11 @@
-"""Validated, atomic model-role assignments."""
+"""Validated live model-role assignments backed by RuntimeSettingsService."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import config
-from storage.settings_store import SettingsStore
+from core.runtime_settings import RuntimeSettingsService
 
 
 class ModelRoleError(ValueError):
@@ -13,18 +13,12 @@ class ModelRoleError(ValueError):
 
 
 class ModelRoles:
-    def __init__(self, settings: SettingsStore):
+    def __init__(self, settings: RuntimeSettingsService):
         self._settings = settings
 
     def assignments(self) -> dict[str, str]:
-        values, _ = self._settings.load()
-        persisted = values.get("model_roles")
-        result = dict(config.DEFAULT_MODEL_ROLES)
-        if isinstance(persisted, dict):
-            result.update(
-                {role: model for role, model in persisted.items() if role in config.MODEL_ROLES and isinstance(model, str)}
-            )
-        return result
+        roles = self._settings.current().get("model_roles", config.DEFAULT_MODEL_ROLES)
+        return dict(roles)
 
     def describe(self, catalog: dict[str, Any]) -> list[dict[str, Any]]:
         installed = {model["name"] for model in catalog.get("models", [])}
@@ -41,5 +35,5 @@ class ModelRoles:
             raise ModelRoleError(f"model is not installed in Ollama: {model}")
         assignments = self.assignments()
         assignments[role] = model
-        self._settings.save({"model_roles": assignments})
+        self._settings.update({"model_roles": assignments})
         return assignments
