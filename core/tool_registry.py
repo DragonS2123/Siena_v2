@@ -24,6 +24,7 @@ from tools.memory_tools import (
     ShortMemorySearchTool,
 )
 from tools.registry import ToolRegistry
+from tools.web import WebSearchTool, WebReadTool
 
 TOOL_NAMES = (
     "short_memory_save",
@@ -34,6 +35,8 @@ TOOL_NAMES = (
     "long_memory_list",
     "candidate_memory_create",
     "delegate_model",
+    "web_search",
+    "web_read",
 )
 
 
@@ -84,6 +87,8 @@ def build_tool_registry(
         LongMemoryListTool(long, logger),
         CandidateMemoryCreateTool(candidates, logger),
         DelegateModelTool(delegate_client, assignments, installed_models, logger),
+        WebSearchTool(),
+        WebReadTool(),
     ):
         registry.register(tool)
     if tuple(registry.names()) != TOOL_NAMES:

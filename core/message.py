@@ -64,6 +64,17 @@ class ToolResult:
             payload = {"ok": False, "response_type": "tool_result", "tool_call_id": tool_call_id, "tool": name, "query": (args or {}).get("query"), "timestamp": timestamp, "error": self.error}
             return json.dumps(payload, ensure_ascii=False)
 
+        if name in {'web_search', 'web_read'}:
+            # JSON escaping preserves page strings as data, even if they contain
+            # role delimiters or imperative text. Never promote them to system.
+            encoded = json.dumps({'ok': True, 'response_type': 'tool_result', 'tool': name,
+                'tool_call_id': tool_call_id, 'timestamp': timestamp,
+                'trust': 'untrusted_external_content', 'result': self.content}, ensure_ascii=False)
+            # JSON alone leaves literal chat-template tokens such as
+            # <start_of_turn> untouched. Unicode escapes keep their meaning as
+            # JSON data without putting those special tokens on the model wire.
+            return encoded.replace('<', '\\u003c').replace('>', '\\u003e')
+
         if _is_search_result_shaped(self.content):
             return _format_search_results(self.content, name, args, timestamp)
 

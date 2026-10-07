@@ -661,6 +661,7 @@ class ChatService:
 
         def metadata(status: str, *, incomplete: bool, error: str | None = None) -> dict[str, Any]:
             return {
+                **({'sources': list(session.web_sources)} if session.web_sources else {}),
                 **selection.metadata(),
                 "status": status,
                 "done_reason": done_reason,
@@ -914,7 +915,11 @@ class ChatService:
                         function = call.get("function") or {}
                         name = function.get("name")
                         args = function.get("arguments") or {}
-                        result = self._registry.dispatch(name, args, tool_call_id=call.get("id"))
+                        self._logger.event('tool_dispatch', name=name, tool_call_id=call.get('id'),
+                                           argument_names=sorted(args), conversation_id=conversation_id)
+                        result = await self._registry.dispatch_async(name, args, tool_call_id=call.get("id"))
+                        self._logger.event('tool_result', name=name, tool_call_id=call.get('id'),
+                                           ok=result.ok, error=result.error, conversation_id=conversation_id)
                         session.add_tool_result(name, result, args, tool_call_id=call.get("id"))
                     current_messages = session.get_context_messages(max_context_messages)
                     continue
@@ -966,6 +971,11 @@ class ChatService:
                     "reason": continuation_reason,
                 }
                 current_messages = continuation_messages(base_messages, accumulated, num_ctx=num_ctx)
+
+            source_suffix = session.citation_suffix(accumulated)
+            if source_suffix:
+                accumulated += source_suffix
+                yield {"type": "assistant.content.delta", "delta": source_suffix}
 
             final_structure_incomplete = (
                 has_incomplete_structure(accumulated)

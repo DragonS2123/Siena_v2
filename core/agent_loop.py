@@ -36,6 +36,7 @@ class AgentResult:
     cancelled: bool = False
     timeout: bool = False
     configured_num_predict: int | None = None
+    sources: tuple[dict, ...] = ()
 
     @property
     def incomplete(self) -> bool:
@@ -43,6 +44,7 @@ class AgentResult:
 
     def metadata(self) -> dict:
         return {
+            **({'sources': list(self.sources)} if self.sources else {}),
             "done": self.done,
             "done_reason": self.done_reason,
             "finish_reason": self.finish_reason,
@@ -153,7 +155,7 @@ def run(
                     content_length=len(content),
                 )
             return AgentResult(
-                content=content,
+                content=content + session.citation_suffix(content),
                 done=raw_response.get("done"),
                 done_reason=done_reason,
                 finish_reason=raw_response.get("finish_reason"),
@@ -162,6 +164,7 @@ def run(
                 total_duration=raw_response.get("total_duration"),
                 error=raw_response.get("error"),
                 configured_num_predict=ollama_client.num_predict,
+                sources=tuple(session.web_sources),
             )
 
         for call in tool_calls:

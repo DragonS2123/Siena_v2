@@ -55,3 +55,20 @@ class ToolRegistry:
             # инфраструктурный сбой: возвращаем её модели как recoverable
             # ToolResult вместо падения всего процесса.
             return ToolResult(ok=False, error=f"Ошибка вызова инструмента {name}: {exc}")
+
+    async def dispatch_async(self, name: str, args: dict, *, tool_call_id: str | None = None) -> ToolResult:
+        """Await Internet I/O so cancelling a streaming turn closes its requests."""
+        tool = self._tools.get(name)
+        if tool is None or not hasattr(tool, 'arun'):
+            return self.dispatch(name, args, tool_call_id=tool_call_id)
+        missing = [a for a in tool.required_args() if a not in args or args[a] is None]
+        if missing:
+            return ToolResult(ok=False, error=f"Missing required argument(s) for {name}: {', '.join(missing)}")
+        try:
+            return await tool.arun(**args)
+        except SienaToolError as exc:
+            return ToolResult(ok=False, error=str(exc))
+        except SienaInfraError:
+            raise
+        except Exception as exc:
+            return ToolResult(ok=False, error=f"Ошибка вызова инструмента {name}: {exc}")
