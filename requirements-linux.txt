@@ -1,0 +1,13 @@
+# Validated native Linux runtime, Python 3.14.8. No Ollama server is installed:
+# its Python SDK remains required by imports of the preserved legacy client.
+ollama==0.6.3
+httpx==0.28.1
+ddgs==9.16.0
+trafilatura==2.3.1
+requests==2.34.2
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+numpy==2.5.3
+./external/audio-validation/runtime/transcribe_cpp-0.3.1-py3-none-any.whl
+pytest==9.1.1

@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from voice.errors import TTSUnavailableError
+from core.owned_exec import owned_command
 from voice.text_sanitize import sanitize_text_for_tts_detailed
 
 
@@ -121,7 +122,7 @@ sys.exit(0 if ok else 2)
             self._log_dir.mkdir(parents=True, exist_ok=True)
             try:
                 self._logs = [(self._log_dir / f'cosyvoice.{s}.log').open('ab') for s in ('stdout', 'stderr')]
-                self._process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                self._process = subprocess.Popen(owned_command(command), env=env, stdin=subprocess.DEVNULL,
                                                  stdout=self._logs[0], stderr=self._logs[1], start_new_session=True)
                 deadline = time.monotonic() + 60
                 with httpx.Client(timeout=2, trust_env=False) as client:

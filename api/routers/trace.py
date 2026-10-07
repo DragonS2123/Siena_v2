@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from api.dependencies import runtime
@@ -29,12 +30,26 @@ async def trace_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     app: Runtime = websocket.app.state.runtime
     queue = app.trace.subscribe()
+    async def wait_disconnect():
+        while (await websocket.receive())['type'] != 'websocket.disconnect':
+            pass
+    disconnected = asyncio.create_task(wait_disconnect())
+    next_event = None
     try:
         for event in app.trace.recent(100):
             await websocket.send_json(event)
         while True:
-            await websocket.send_json(await queue.get())
+            # A quiet trace queue must not hide renderer disconnect from Uvicorn.
+            next_event = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait((next_event, disconnected), return_when=asyncio.FIRST_COMPLETED)
+            if disconnected in done:
+                break
+            await websocket.send_json(next_event.result())
     except WebSocketDisconnect:
         pass
     finally:
+        tasks = [task for task in (next_event, disconnected) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         app.trace.unsubscribe(queue)

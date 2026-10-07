@@ -8,6 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
+
+from core.owned_exec import owned_command
 
 from core.errors import SienaInfraError, SienaTimeoutError
 
@@ -24,6 +27,9 @@ class GigaAMSTTProvider:
         self._icd = vulkan_icd
         self._timeout = timeout
         self._logger = logger
+        self._workers = set()
+        self._lock = threading.RLock()
+        self._closing = False
 
     @property
     def model_path(self):
@@ -54,17 +60,29 @@ class GigaAMSTTProvider:
                    "--model", str(self._model_path), "--device-id", self._device_id,
                    "--expected-gpu", self._expected_gpu, str(wav_path)]
         start = time.monotonic()
+        worker = None
         try:
-            response = subprocess.run(command, env=env, stdin=subprocess.DEVNULL,
-                                      capture_output=True, text=True, timeout=self._timeout, check=False)
+            with self._lock:
+                if self._closing:
+                    raise SienaInfraError("GigaAM owner is shutting down")
+                worker = subprocess.Popen(owned_command(command), env=env, stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self._workers.add(worker)
+            stdout, stderr = worker.communicate(timeout=self._timeout)
         except subprocess.TimeoutExpired as exc:
+            worker.kill()
+            worker.communicate(timeout=5)
             raise SienaTimeoutError("GigaAM transcription timed out; worker terminated") from exc
         except OSError as exc:
             raise SienaInfraError("unable to launch GigaAM worker") from exc
-        if response.returncode:
-            raise SienaInfraError(f"GigaAM worker failed (exit {response.returncode}): {response.stderr[-1000:]}")
+        finally:
+            if worker is not None:
+                with self._lock:
+                    self._workers.discard(worker)
+        if worker.returncode:
+            raise SienaInfraError(f"GigaAM worker failed (exit {worker.returncode}): {stderr[-1000:]}")
         try:
-            data = json.loads(response.stdout)
+            data = json.loads(stdout)
             if not isinstance(data, dict) or not isinstance(data.get("text"), str):
                 raise ValueError("invalid result")
         except ValueError as exc:
@@ -73,3 +91,24 @@ class GigaAMSTTProvider:
             raise SienaInfraError("GigaAM produced no speech text")
         return {**data, "provider": self.PROVIDER_NAME, "language": "ru", "backend": "vulkan",
                 "model_path": str(self._model_path), "elapsed_ms": round((time.monotonic() - start) * 1000)}
+
+
+    def close(self):
+        """Stop only retained worker handles, including in-flight transcription."""
+        with self._lock:
+            self._closing = True
+            workers = list(self._workers)
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+        deadline = time.monotonic() + 5
+        pending = []
+        for worker in workers:
+            try:
+                worker.wait(timeout=max(.01, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                pending.append(worker)
+        deadline = time.monotonic() + 2
+        for worker in pending:
+            worker.wait(timeout=max(.01, deadline - time.monotonic()))

@@ -4181,19 +4181,11 @@ function DesktopSettings() {
         <span className="text-xs text-[#8a7f75]">{t("settings.desktop.backend")}</span>
         <Badge label={backendOnline ? t("settings.desktop.online") : t("settings.desktop.offline")} variant={backendOnline ? "ok" : "error"} />
       </div>
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.trayEnabled")}</span>
-        <Badge label={t("settings.desktop.yes")} variant="ok" />
-      </div>
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-[#8a7f75]">{t("settings.desktop.closeToTrayStatus")}</span>
-        <Badge label={t("settings.desktop.yes")} variant="ok" />
-      </div>
     </SettingsCard>
     <SettingsCard title={t("settings.desktop.tray")}>
       <div className="text-xs text-[#8a7f75] leading-relaxed">
-        The restored desktop shell keeps the original tray, minimize-to-tray and close-to-tray behavior.
-        Backend lifecycle is managed outside the UI.
+        On Linux, closing the window exits Siena by default. Keeping Siena in the tray requires an explicit opt-in.
+        Quit stops Siena and its local services.
       </div>
     </SettingsCard>
   </>);

@@ -151,7 +151,13 @@ def close_runtime(runtime: Runtime) -> None:
     for task in runtime.background_tasks:
         if not task.done():
             task.cancel()
-    try:
-        runtime.llama_cpp.close()
-    finally:
-        runtime.tts.stop_server()
+    errors = []
+    stt_close = getattr(getattr(runtime, 'stt', None), 'close', None)
+    for stop in (stt_close, runtime.llama_cpp.close, runtime.tts.stop_server):
+        if stop is not None:
+            try:
+                stop()
+            except Exception as exc:
+                errors.append(exc)
+    if errors:
+        raise errors[0]

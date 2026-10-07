@@ -16,6 +16,7 @@ except ImportError:  # Legacy Windows/Ollama runtime may still import this modul
     fcntl = None
 
 import config
+from core.owned_exec import owned_command
 from core.errors import SienaInfraError, SienaTimeoutError
 from core.provider_factory import create_provider
 
@@ -238,7 +239,7 @@ class LlamaCppProcessManager:
                 port = self._snapshot.get("llama_cpp_port")
                 self._stdout = (self._log_dir / f"llama-server-{port}.stdout.log").open("ab")
                 self._stderr = (self._log_dir / f"llama-server-{port}.stderr.log").open("ab")
-                self._process = subprocess.Popen(self._command, env=env,
+                self._process = subprocess.Popen(owned_command(self._command), env=env,
                     stdin=subprocess.DEVNULL, stdout=self._stdout, stderr=self._stderr,
                     start_new_session=True, close_fds=True)
                 self._started_at = time.monotonic()

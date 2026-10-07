@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test ../tests/desktop/*.test.cjs",
     "dev": "vite",
     "desktop": "vite build && electron .",
     "desktop:devtools": "vite build && set SIENA_OPEN_DEVTOOLS=1&& electron .",

@@ -33,7 +33,7 @@ def main():
     print(f'Siena Linux data: {root}', flush=True)
     import uvicorn
     from api.app import app
-    uvicorn.run(app, host='127.0.0.1', port=8000)
+    uvicorn.run(app, host='127.0.0.1', port=8000, timeout_graceful_shutdown=5)
 
 
 if __name__ == '__main__':

@@ -3,21 +3,65 @@
 // The renderer is still the whole application: it talks to the Python
 // backend (api/server.py) directly over HTTP/WebSocket, and this process
 // never proxies that traffic. What lives here since 0.2.2 is the Desktop
-// Presence Shell: a Windows tray icon, minimize/close-to-tray, a backend
-// online/offline indicator. Backend lifecycle belongs to the modular core
-// and is intentionally not controlled from the desktop shell.
+// Presence Shell: optional tray, persisted window state, and concrete Linux
+// backend ownership. Inference/voice remain managed by the Python runtime.
 
 const { app, BrowserWindow, Menu, Tray, nativeImage, session, ipcMain, screen, dialog } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const { BackendProcess } = require('./backend-process.cjs');
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const DATA_ROOT = path.resolve(process.env.SIENA_DATA_DIR || path.join(REPO_ROOT, 'storage/linux'));
+app.setName('Siena');
+if (process.platform === 'linux') app.setDesktopName('siena.desktop');
+app.setPath('userData', path.join(DATA_ROOT, 'desktop-config', 'Siena'));
+fs.mkdirSync(app.getPath('userData'), { recursive: true });
+// Acquire before spawning anything: all entry points share this one lock.
+if (!app.requestSingleInstanceLock()) app.exit(0);
+const backend = process.platform === 'linux' ? new BackendProcess(REPO_ROOT) : null;
+let quitPromise = null;
+let quitComplete = false;
+let shellReady = false;
+const gpuFailures = [];
+app.on('child-process-gone', (_event, details) => {
+  if (details.type === 'GPU' && details.reason !== 'clean-exit') {
+    gpuFailures.push(details);
+    console.error('Siena GPU process:', details);
+  }
+});
+app.on('second-instance', () => { if (!quitPromise) showWindow(); });
+
+async function requestQuit() {
+  if (quitPromise) return quitPromise;
+  app.isQuittingForReal = true;
+  // Assign before destroying windows: window-all-closed can re-enter app.quit.
+  quitPromise = Promise.resolve().then(async () => {
+    // Closing the renderer releases microphone, HTTP streams and WebSockets.
+    // Electron's main process stays alive until its owned backend has exited.
+    for (const win of BrowserWindow.getAllWindows()) { persistWindowState(win); win.destroy(); }
+    tray?.destroy(); tray = null;
+    try { await backend?.stop(); }
+    catch (error) { console.error('Siena shutdown:', error); process.exitCode = 1; }
+    quitComplete = true;
+    app.quit();
+  });
+  return quitPromise;
+}
+process.on('SIGTERM', () => { void requestQuit(); });
+process.on('SIGINT', () => { void requestQuit(); });
+backend && (backend.onUnexpectedExit = details => {
+  console.error('Owned backend exited unexpectedly:', details);
+  void requestQuit();
+});
+
 
 const HEALTH_POLL_MS = 10_000;
 
 const SHELL_SETTING_DEFAULTS = {
   enable_tray_icon: true,
-  minimize_to_tray: true,
-  close_to_tray: true,
+  minimize_to_tray: process.platform !== 'linux',
+  close_to_tray: process.platform !== 'linux',
   show_tray_notifications: false,
 };
 
@@ -82,7 +126,13 @@ function scheduleWindowStateSave(win) {
   windowStateSaveTimer = setTimeout(() => persistWindowState(win), 250);
 }
 function readShellSettings() {
-  return { ...SHELL_SETTING_DEFAULTS };
+  // Explicit persisted opt-in only; never write/migrate user settings here.
+  const result = { ...SHELL_SETTING_DEFAULTS };
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(DATA_ROOT, 'settings.json'), 'utf8'));
+    for (const name of Object.keys(result)) if (typeof settings[name] === 'boolean') result[name] = settings[name];
+  } catch { /* Missing settings use the platform defaults. */ }
+  return result;
 }
 
 function checkBackendHealth(callback) {
@@ -107,6 +157,7 @@ function refreshBackendStatus({ pollAfterAction = false } = {}) {
 }
 
 function showWindow() {
+  if (quitPromise || !shellReady) return;
   if (!mainWindow) {
     createWindow();
     return;
@@ -147,7 +198,7 @@ function updateTray() {
       { label: "Hide to tray", click: hideToTray },
       { type: "separator" },
       { label: backendStatusLabel(), enabled: false },
-      { label: "Quit", click: () => app.quit() },
+      { label: "Quit", click: () => { void requestQuit(); } },
     ]),
   );
 }
@@ -170,6 +221,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 620,
     frame: false,
+    icon: path.join(REPO_ROOT, "assets", "siena.png"),
     backgroundColor: "#1a1714", // matches src/styles/theme.css --background, avoids a white flash on load
     autoHideMenuBar: true,
     webPreferences: {
@@ -187,9 +239,7 @@ function createWindow() {
   win.on("maximize", publishMaximized);
   win.on("unmaximize", publishMaximized);
 
-  // Desktop Presence Shell: X / minimize hide to the tray instead of
-  // killing the app. Quit from the tray menu sets app.isQuittingForReal,
-  // so the final close is not intercepted.
+  // Tray behavior is an explicit opt-in on Linux. A real Quit bypasses it.
   win.on("close", (event) => {
     persistWindowState(win);
     if (app.isQuittingForReal || !tray) return;
@@ -225,11 +275,17 @@ function createWindow() {
 }
 
 app.isQuittingForReal = false;
-app.on("before-quit", () => {
-  app.isQuittingForReal = true;
+app.on("before-quit", (event) => {
+  if (quitComplete) return;
+  event.preventDefault();
+  void requestQuit();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (quitPromise) return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: 'Siena', submenu: [{ label: 'Quit', accelerator: 'Ctrl+Q', click: () => { void requestQuit(); } }] },
+  ]));
   const senderWindow = (event) => BrowserWindow.fromWebContents(event.sender);
   ipcMain.handle("siena:window:minimize", (event) => senderWindow(event)?.minimize());
   ipcMain.handle("siena:window:toggle-maximize", (event) => {
@@ -284,6 +340,14 @@ app.whenReady().then(() => {
     callback(false);
   });
 
+  if (backend) {
+    backendActionInFlight = 'start';
+    await backend.start();
+    backendOnline = true;
+    backendActionInFlight = null;
+  }
+  if (quitPromise) return;
+  shellReady = true;
   const settings = readShellSettings();
   if (settings.enable_tray_icon) {
     createTray();
@@ -305,10 +369,14 @@ app.whenReady().then(() => {
         backendActionInFlight,
         windowVisible: mainWindow ? mainWindow.isVisible() : null,
         settings: readShellSettings(),
+        backend: backend?.diagnostics(),
+        electronPid: process.pid,
       }),
       closeWindow: () => mainWindow?.close(),
       minimizeWindow: () => mainWindow?.minimize(),
-      quit: () => app.quit(),
+      quit: requestQuit,
+      menuQuit: () => Menu.getApplicationMenu().items[0].submenu.items.find(item => item.label === 'Quit').click(),
+      gpu: async () => ({ features: app.getGPUFeatureStatus(), info: await app.getGPUInfo("complete"), failures: gpuFailures }),
       // Smoke runs drive the UI while the window is occluded by the user's
       // own windows — Chromium freezes rAF for occluded pages, which stalls
       // framer-motion view transitions and makes assertions flaky.
@@ -317,8 +385,15 @@ app.whenReady().then(() => {
   }
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!quitPromise && BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch(async error => {
+  if (quitPromise) return; // SIGTERM during startup is an ordinary shutdown.
+  console.error('Siena desktop startup:', error);
+  // A modal error must not hold a partially started backend/GPU alive.
+  try { await backend?.stop(); } catch (cleanupError) { console.error(cleanupError); }
+  dialog.showErrorBox('Siena — ошибка запуска', error.message);
+  void requestQuit();
 });
 
 app.on("window-all-closed", () => {

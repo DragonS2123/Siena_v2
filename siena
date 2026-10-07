@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SIENA_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SIENA_PYTHON="$SIENA_ROOT/.venv-linux/bin/python"
+if [[ ! -x "$SIENA_PYTHON" ]]; then
+  printf '%s\n' 'Siena: .venv-linux is missing. Run scripts/bootstrap_linux.sh first.' >&2
+  exit 1
+fi
+cd "$SIENA_ROOT"
+export SIENA_DATA_DIR="${SIENA_DATA_DIR:-$SIENA_ROOT/storage/linux}"
+if ! SIENA_UI_DEVICE="$("$SIENA_PYTHON" scripts/desktop_preflight.py)"; then
+  exit 1
+fi
+export DRI_PRIME="$SIENA_UI_DEVICE"
+export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+# Desktop only: no software GL override and no inherited Electron Node mode.
+unset ELECTRON_RUN_AS_NODE EGL_PLATFORM LIBGL_ALWAYS_SOFTWARE
+SIENA_DEBUG_ARGS=()
+if [[ "${SIENA_SHELL_DEBUG:-0}" == 1 ]]; then
+  # Opt-in local diagnostics for desktop smoke tests; no ports in normal use.
+  SIENA_DEBUG_ARGS=(--inspect=127.0.0.1:9231 --remote-debugging-port=9229 --enable-logging=stderr)
+fi
+exec "$SIENA_ROOT/Siena v2 Control Panel UI/node_modules/electron/dist/electron" \
+  "$SIENA_ROOT/Siena v2 Control Panel UI" --ozone-platform=wayland --use-angle=vulkan "${SIENA_DEBUG_ARGS[@]}" "$@"
