@@ -32,7 +32,7 @@ class ModelRoles:
             raise ModelRoleError(f"unknown model role: {role}")
         installed = {item["name"] for item in catalog.get("models", [])}
         if model not in installed:
-            raise ModelRoleError(f"model is not installed in Ollama: {model}")
+            raise ModelRoleError(f"model is unavailable from inference provider: {model}")
         assignments = self.assignments()
         assignments[role] = model
         self._settings.update({"model_roles": assignments})

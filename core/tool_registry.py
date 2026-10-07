@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import config
-from core.ollama_client import OllamaClient
+from core.model_provider import ModelProvider
+from core.provider_factory import create_provider
 from core.runtime_settings import RuntimeSettingsService
 from memory.candidate_memory_store import CandidateMemoryStore
 from memory.embedding_service import EmbeddingService
@@ -63,10 +64,10 @@ def build_tool_registry(
     )
     candidates = CandidateMemoryStore(config.CANDIDATE_MEMORY_DB_PATH)
 
-    def delegate_client(model: str) -> OllamaClient:
+    def delegate_client(model: str) -> ModelProvider:
         snapshot = settings.current()
-        return OllamaClient(
-            str(snapshot.get("ollama_host")),
+        return create_provider(
+            snapshot,
             model,
             int(snapshot.get("request_timeout_seconds")),
             num_ctx=int(snapshot.get("context_size")),

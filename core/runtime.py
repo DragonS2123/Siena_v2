@@ -12,7 +12,9 @@ import config
 from core.chat_service import ChatService
 from core.attachment_service import AttachmentService
 from core.data_migration import migrate_conversations
-from core.model_catalog import ModelCatalog
+from core.provider_factory import ProviderCatalog
+from core.llama_cpp_process import LlamaCppProcessManager, PROCESS_FIELDS
+from core.errors import SienaInfraError
 from core.model_roles import ModelRoles
 from core.runtime_settings import RuntimeSettingsService
 from core.tool_registry import build_tool_registry
@@ -23,24 +25,27 @@ from storage.settings_store import SettingsStore
 from voice.qwen_tts_ggml_vulkan import QwenTTSGgmlVulkanProvider
 from voice.voice_profiles import VoiceProfileStore
 from voice.whisper_cpp_stt import WhisperCppSTTProvider
+from voice.gigaam_stt import GigaAMSTTProvider
+from voice.cosyvoice_cpp import CosyVoiceCppProvider
 
 
 @dataclass
 class Runtime:
     settings: RuntimeSettingsService
     roles: ModelRoles
-    catalog: ModelCatalog
+    catalog: ProviderCatalog
     conversations: ConversationStore
     registry: Any
     short_memory: Any
     long_memory: Any
     candidates: Any
     chat: ChatService
-    stt: WhisperCppSTTProvider
-    tts: QwenTTSGgmlVulkanProvider
+    stt: WhisperCppSTTProvider | GigaAMSTTProvider
+    tts: QwenTTSGgmlVulkanProvider | CosyVoiceCppProvider
     voice_profiles: VoiceProfileStore
     logger: SienaLogger
     trace: TraceService
+    llama_cpp: LlamaCppProcessManager
     background_tasks: list[Any]
 
 
@@ -69,7 +74,8 @@ def create_runtime() -> Runtime:
     )
     migrate_conversations(config.CONVERSATIONS_DB_PATH)
     roles = ModelRoles(settings)
-    catalog = ModelCatalog(lambda: str(settings.current().get("ollama_host")))
+    manager = LlamaCppProcessManager(settings.current(), config.LOG_DIR, logger)
+    catalog = ProviderCatalog(settings, manager)
     conversations = ConversationStore(config.CONVERSATIONS_DB_PATH, config.CONVERSATION_EVENTS_DEFAULT_LIMIT)
     interrupted_streams = conversations.list_active_stream_messages()
     recovered_streams = conversations.recover_interrupted_messages()
@@ -82,17 +88,9 @@ def create_runtime() -> Runtime:
     registry, short, long, candidates = build_tool_registry(logger, settings, roles.assignments, installed)
     attachments = AttachmentService(config.ATTACHMENTS_STORAGE_ROOT, conversations, roles, settings, logger)
     chat = ChatService(conversations, roles, catalog, registry, long, attachments, logger, settings)
-    background_tasks: list[Any] = []
-    if interrupted_streams and bool(settings.current().get("auto_resume_interrupted")):
-        try:
-            loop = asyncio.get_running_loop()
-            background_tasks = [
-                loop.create_task(chat.resume_interrupted_message(record), name=f"resume-{record['id']}")
-                for record in interrupted_streams
-            ]
-        except RuntimeError:
-            logger.event("stream_resume_deferred", count=len(interrupted_streams), reason="no_running_event_loop")
-    stt = WhisperCppSTTProvider(
+    stt = GigaAMSTTProvider(config.GIGAAM_LIBRARY, config.GIGAAM_MODEL, config.GIGAAM_DEVICE_ID,
+                          config.VOICE_EXPECTED_GPU, config.VOICE_VULKAN_ICD,
+                          config.WHISPER_CPP_TIMEOUT_SECONDS, logger) if config.STT_PROVIDER == "gigaam_v3_e2e_rnnt" else WhisperCppSTTProvider(
         config.WHISPER_CPP_EXE_PATH,
         config.WHISPER_CPP_MODEL_PATH,
         config.WHISPER_CPP_TIMEOUT_SECONDS,
@@ -102,7 +100,10 @@ def create_runtime() -> Runtime:
         config.WHISPER_CPP_CPU_FALLBACK,
         logger,
     )
-    tts = QwenTTSGgmlVulkanProvider(
+    tts = CosyVoiceCppProvider(config.COSYVOICE_BINARY, config.COSYVOICE_MODEL, config.COSYVOICE_PROMPT,
+                             config.TTS_OUTPUT_DIR, config.LOG_DIR, config.COSYVOICE_URL,
+                             config.COSYVOICE_DEVICE, config.VOICE_EXPECTED_GPU, config.VOICE_VULKAN_ICD,
+                             config.COSYVOICE_VOICE) if config.TTS_PROVIDER == "cosyvoice3_cpp" else QwenTTSGgmlVulkanProvider(
         config.QWEN_TTS_SERVER_URL,
         config.QWEN_TTS_EXE,
         config.QWEN_TTS_MODEL_PATH,
@@ -115,15 +116,42 @@ def create_runtime() -> Runtime:
         logger=logger,
     )
     profiles = VoiceProfileStore(config.VOICE_PROFILES_PATH, logger)
-    return Runtime(
+    runtime = Runtime(
         settings, roles, catalog, conversations, registry, short, long,
-        candidates, chat, stt, tts, profiles, logger, trace, background_tasks
+        candidates, chat, stt, tts, profiles, logger, trace, manager, []
     )
+
+    def configure_inference(snapshot, changed):
+        try:
+            if PROCESS_FIELDS.intersection(changed):
+                manager.configure(snapshot)
+        except SienaInfraError as exc:
+            # Keep the API available for diagnostics, but the managed catalog
+            # refuses to use an external process after a failed start.
+            logger.event("llama_server.startup_failed", error=str(exc))
+
+    settings.subscribe(configure_inference)
+    try:
+        manager.start()
+    except SienaInfraError as exc:
+        logger.event("llama_server.startup_failed", error=str(exc))
+    if interrupted_streams and bool(settings.current().get("auto_resume_interrupted")):
+        try:
+            loop = asyncio.get_running_loop()
+            runtime.background_tasks = [
+                loop.create_task(chat.resume_interrupted_message(record), name=f"resume-{record['id']}")
+                for record in interrupted_streams
+            ]
+        except RuntimeError:
+            logger.event("stream_resume_deferred", count=len(interrupted_streams), reason="no_running_event_loop")
+    return runtime
 
 
 def close_runtime(runtime: Runtime) -> None:
     for task in runtime.background_tasks:
         if not task.done():
             task.cancel()
-    runtime.tts.stop_server()
-
+    try:
+        runtime.llama_cpp.close()
+    finally:
+        runtime.tts.stop_server()

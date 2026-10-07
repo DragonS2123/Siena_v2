@@ -4,6 +4,7 @@ User-editable values live in ``storage/settings.json``.  Importing this
 module performs no I/O and starts no services.
 """
 
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,6 +42,38 @@ DEFAULT_MODEL_ROLES = {
     "embedding": "intfloat/multilingual-e5-small",
 }
 
+# Linux runtime owns llama-server; both profiles use the same GGUF.
+DEFAULT_INFERENCE_PROVIDER = "llama_cpp" if sys.platform.startswith("linux") else "ollama"
+LLAMA_CPP_HOST = "127.0.0.1"
+LLAMA_CPP_PORT = 8088
+LLAMA_CPP_URL = f"http://{LLAMA_CPP_HOST}:{LLAMA_CPP_PORT}"
+LLAMA_CPP_BINARY = BASE_DIR / "external" / "gemma4-validation" / "runtime" / "llama-b11429" / "llama-server"
+LLAMA_CPP_MODEL = "gemma-4-26B-A4B-it"
+LLAMA_CPP_MODEL_PATH = BASE_DIR / "external" / "gemma4-validation" / "models" / "google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
+LLAMA_CPP_PROFILES = {"normal": 16384, "long": 32768}
+LLAMA_CPP_PROFILE_ALIASES = {"gemma4-16k": "normal", "gemma4-32k": "long"}
+LLAMA_CPP_DEFAULT_PROFILE = "normal"
+LLAMA_CPP_MANAGED = sys.platform.startswith("linux")
+LLAMA_CPP_DEVICE = "Vulkan0"  # Verified with b11429 --list-devices, checked again at start.
+LLAMA_CPP_EXPECTED_GPU = "AMD Radeon RX 7900 XTX"
+LLAMA_CPP_VULKAN_ICD = Path("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json")
+LLAMA_CPP_VISIBLE_DEVICES = "0"
+LLAMA_CPP_STARTUP_TIMEOUT = 120
+LLAMA_CPP_SHUTDOWN_TIMEOUT = 15
+LLAMA_CPP_REASONING = True  # Let Gemma's chat template select its normal thinking mode.
+LLAMA_CPP_REASONING_BUDGET_TOKENS = 512  # Interim resource cap; benchmark quality is not sufficient for acceptance.
+INFERENCE_CONNECT_TIMEOUT_SECONDS = OLLAMA_CONNECT_TIMEOUT_SECONDS
+INFERENCE_FIRST_TOKEN_TIMEOUT_SECONDS = OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS
+INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS = OLLAMA_STREAM_IDLE_TIMEOUT_SECONDS
+
+
+def inference_model_roles(provider: str, model: str = LLAMA_CPP_MODEL) -> dict[str, str]:
+    roles = dict(DEFAULT_MODEL_ROLES)  # Legacy assignments remain available.
+    if provider == "llama_cpp":
+        roles.update({role: model for role in ("chat", "deep", "coder", "reviewer", "memory")})
+    return roles
+
+
 CONVERSATIONS_DB_PATH = BASE_DIR / "storage" / "conversations.sqlite3"
 CONVERSATION_LIST_DEFAULT_LIMIT = 50
 CONVERSATION_EVENTS_DEFAULT_LIMIT = 300
@@ -63,7 +96,12 @@ MAX_TOTAL_ATTACHMENT_TEXT_CHARS = 60_000
 MAX_IMAGE_ATTACHMENT_BYTES = 6 * 1024 * 1024
 
 STT_ENABLED = True
-STT_PROVIDER = "whisper_cpp"
+STT_PROVIDER = "gigaam_v3_e2e_rnnt" if sys.platform.startswith("linux") else "whisper_cpp"
+GIGAAM_LIBRARY = BASE_DIR / "external/audio-validation/runtime/transcribe-0.3.1/transcribe-native-linux-x86_64-cpu-vulkan/libtranscribe.so"
+GIGAAM_MODEL = BASE_DIR / "external/audio-validation/models/gigaam-v3-e2e-rnnt-Q8_0.gguf"
+GIGAAM_DEVICE_ID = "0000:03:00.0"
+VOICE_EXPECTED_GPU = "AMD Radeon RX 7900 XTX"
+VOICE_VULKAN_ICD = Path("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json")
 WHISPER_CPP_EXE_PATH = BASE_DIR / "external" / "whisper.cpp" / "build" / "bin" / "Release" / "whisper-cli.exe"
 WHISPER_CPP_MODEL_PATH = BASE_DIR / "external" / "whisper.cpp" / "models" / "ggml-base.bin"
 WHISPER_CPP_LANGUAGE = "ru"
@@ -75,7 +113,13 @@ WHISPER_CPP_BEAM_SIZE = 1
 WHISPER_CPP_BEST_OF = 1
 WHISPER_CPP_CPU_FALLBACK = True
 
-TTS_PROVIDER = "qwen3_tts_ggml_vulkan"
+TTS_PROVIDER = "cosyvoice3_cpp" if sys.platform.startswith("linux") else "qwen3_tts_ggml_vulkan"
+COSYVOICE_BINARY = BASE_DIR / "external/audio-validation/runtime/cosyvoice-0.1.3/cosyvoice-server"
+COSYVOICE_MODEL = BASE_DIR / "external/audio-validation/models/CosyVoice3-2512_Q8_0.gguf"
+COSYVOICE_PROMPT = BASE_DIR / "external/audio-validation/voices/russian-female.gguf"
+COSYVOICE_URL = "http://127.0.0.1:8080"
+COSYVOICE_DEVICE = "Vulkan0"
+COSYVOICE_VOICE = "siena_ru_female"
 TTS_OUTPUT_DIR = BASE_DIR / "storage" / "tts"
 VOICE_PROFILES_PATH = BASE_DIR / "storage" / "voice_profiles.json"
 TTS_STRIP_ALL_NUMBERS = False

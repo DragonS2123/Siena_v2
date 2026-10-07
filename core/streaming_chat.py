@@ -259,20 +259,25 @@ async def with_stream_timeouts(
     iterator = source.__aiter__()
     loop = asyncio.get_running_loop()
     first = True
-    while True:
-        remaining = hard_deadline - loop.time()
-        if remaining <= 0:
-            raise SienaTimeoutError("Ollama hard total generation timeout")
-        timeout = min(first_token_timeout if first else idle_timeout, remaining)
-        try:
-            chunk = await asyncio.wait_for(anext(iterator), timeout=timeout)
-        except StopAsyncIteration:
-            return
-        except TimeoutError as exc:
-            kind = "first token" if first else "stream idle"
-            raise SienaTimeoutError(f"Ollama {kind} timeout after {timeout:.1f}s") from exc
-        first = False
-        yield chunk
+    try:
+        while True:
+            remaining = hard_deadline - loop.time()
+            if remaining <= 0:
+                raise SienaTimeoutError("Inference hard total generation timeout")
+            timeout = min(first_token_timeout if first else idle_timeout, remaining)
+            try:
+                chunk = await asyncio.wait_for(anext(iterator), timeout=timeout)
+            except StopAsyncIteration:
+                return
+            except TimeoutError as exc:
+                kind = "first token" if first else "stream idle"
+                raise SienaTimeoutError(f"Inference {kind} timeout after {timeout:.1f}s") from exc
+            first = False
+            yield chunk
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
 
 
 def continuation_messages(

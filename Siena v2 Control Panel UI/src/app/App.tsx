@@ -135,11 +135,11 @@ const NAV_SECONDARY: { id: MainView; labelKey: string; icon: React.ElementType }
 const VOICE_LABELS: Record<VoiceState, { primary: string; sub: string }> = {
   idle:                    { primary: "",                      sub: "" },
   "requesting-permission": { primary: "Requesting microphone…", sub: "Waiting for permission" },
-  listening:               { primary: "Listening…",            sub: "whisper.cpp · speak now" },
-  "speaking-user":         { primary: "Hearing you…",          sub: "whisper.cpp · live input" },
-  transcribing:            { primary: "Transcribing…",         sub: "whisper.cpp processing" },
+  listening:               { primary: "Listening…",            sub: "Speak now" },
+  "speaking-user":         { primary: "Hearing you…",          sub: "Microphone input" },
+  transcribing:            { primary: "Transcribing…",         sub: "Speech recognition" },
   thinking:                { primary: "Processing…",           sub: "Siena is thinking" },
-  "speaking-siena":        { primary: "Siena is speaking…",   sub: "faster_qwen3-tts streaming" },
+  "speaking-siena":        { primary: "Siena is speaking…",   sub: "Local speech synthesis" },
   fallback:                { primary: "Siena is speaking…",   sub: "Silero fallback active" },
   "error-mic":             { primary: "Transcription failed",  sub: "Check microphone / STT status" },
   "error-tts":             { primary: "TTS provider failed",  sub: "Check Voice settings" },
@@ -561,7 +561,7 @@ function FeedbackRow({ content, messageId, speech, conversationId, isLatestAssis
 
   const isThisMessage = speech.activeMessageId === messageId;
   const speakState: SpeechState = isThisMessage ? speech.state : "idle";
-  const speakUsedFallback = isThisMessage && speech.state === "speaking" && speech.provider && speech.provider !== "qwen3_tts_ggml_vulkan";
+  const speakUsedFallback = isThisMessage && speech.state === "speaking" && speech.provider && !["qwen3_tts_ggml_vulkan", "cosyvoice3_cpp"].includes(speech.provider);
 
   const handleSpeakClick = () => {
     if (speakState === "speaking" || speakState === "preparing") {
@@ -1471,7 +1471,7 @@ function Composer({ onSend, onCancel, thinking, speech, conversationId }: {
                   ? (voiceStatusData?.stt_reason ?? voiceStatusError ?? "STT unavailable")
                   : conversation.active
                     ? "Stop Conversation Mode to use push-to-talk"
-                    : (voiceState === "listening" ? "Stop recording" : "Start voice input (whisper.cpp)")
+                    : (voiceState === "listening" ? "Stop recording" : "Start voice input")
               }
               whileHover={{ scale: 1.08 }} whileTap={{ scale: 0.92 }}
               className={`relative w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
@@ -5058,5 +5058,3 @@ function AppShell() {
     </div>
   );
 }
-
-

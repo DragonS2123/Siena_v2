@@ -12,9 +12,13 @@ router = APIRouter(tags=["diagnostics"])
 @router.get("/api/runtime/status")
 def runtime_status(app: Runtime = Depends(runtime)) -> dict:
     catalog = app.catalog.refresh()
+    legacy = app.settings.current().get("inference_provider") == "ollama"
     return {
         "status": "ok",
-        "ollama": {"available": catalog["available"], "error": catalog["error"]},
+        "inference": {**catalog.get("diagnostics", {}), "available": catalog["available"], "error": catalog["error"]},
+        "llama_server": app.llama_cpp.diagnostics(),
+        "ollama": {"available": catalog["available"] if legacy else None,
+                   "error": catalog["error"] if legacy else None, "active": legacy},
         "registered_tools": [{"name": name} for name in app.registry.names()],
         "model_roles": app.roles.describe(catalog),
         "effective_settings": app.settings.current().as_dict(),
@@ -41,7 +45,9 @@ def diagnostics(app: Runtime = Depends(runtime)) -> dict:
     ][-50:]
     snapshot = app.settings.current()
     return {
-        "ollama_available": catalog["available"],
+        "inference": {**catalog.get("diagnostics", {}), "available": catalog["available"], "error": catalog["error"]},
+        "llama_server": app.llama_cpp.diagnostics(),
+        "ollama_available": catalog["available"] if snapshot.get("inference_provider") == "ollama" else None,
         "missing_models": [item for item in assignments if item["missing"]],
         "model_roles": assignments,
         "effective_settings": snapshot.as_dict(),

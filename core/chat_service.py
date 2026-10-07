@@ -12,10 +12,10 @@ import config
 from core.agent_loop import AgentResult, run as run_agent_loop
 from core.errors import SienaInfraError
 from core.attachment_service import AttachmentService
-from core.model_catalog import ModelCatalog
 from core.model_roles import ModelRoles
 from core.model_router import ModelSelection, is_coding_intent, resolve_model
-from core.ollama_client import OllamaClient
+from core.model_provider import ModelProvider
+from core.provider_factory import ProviderCatalog, create_provider
 from core.session import Session
 from core.streaming_chat import (
     PrematureHtmlFenceFilter,
@@ -36,7 +36,7 @@ class ChatService:
         self,
         conversations: ConversationStore,
         roles: ModelRoles,
-        catalog: ModelCatalog,
+        catalog: ProviderCatalog,
         registry: ToolRegistry,
         long_memory: Any,
         attachments: AttachmentService,
@@ -140,7 +140,7 @@ class ChatService:
 
     async def _stream_model_with_retry(
         self,
-        client: OllamaClient,
+        client: ModelProvider,
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None,
@@ -154,14 +154,16 @@ class ChatService:
         attempt = 0
         while True:
             emitted = False
+            timed = None
             try:
                 source = client.stream_chat(messages, tools=tools)
-                async for chunk in with_stream_timeouts(
+                timed = with_stream_timeouts(
                     source,
-                    first_token_timeout=config.OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS,
-                    idle_timeout=config.OLLAMA_STREAM_IDLE_TIMEOUT_SECONDS,
+                    first_token_timeout=config.INFERENCE_FIRST_TOKEN_TIMEOUT_SECONDS,
+                    idle_timeout=config.INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS,
                     hard_deadline=hard_deadline,
-                ):
+                )
+                async for chunk in timed:
                     emitted = True
                     yield chunk
                 return
@@ -182,6 +184,9 @@ class ChatService:
                     error=str(exc),
                 )
                 await asyncio.sleep(delay)
+            finally:
+                if timed is not None:
+                    await timed.aclose()
 
     async def _review_generated_code(
         self,
@@ -195,7 +200,7 @@ class ChatService:
     ) -> dict[str, Any]:
         reviewer_model = self._roles.assignments()["reviewer"]
         if reviewer_model not in installed:
-            raise ValueError(f"selected reviewer model is missing from Ollama: {reviewer_model}")
+            raise ValueError(f"selected reviewer model is unavailable from inference provider: {reviewer_model}")
         max_chars = max(4000, (int(snapshot.get("context_size")) - 2048) * 2)
         review_content = content[-max_chars:]
         truncated = len(review_content) != len(content)
@@ -210,8 +215,8 @@ class ChatService:
             settings_revision=snapshot.revision,
             started_at=started_at,
         )
-        client = OllamaClient(
-            str(snapshot.get("ollama_host")),
+        client = create_provider(
+            snapshot,
             reviewer_model,
             int(snapshot.get("request_timeout_seconds")),
             False,
@@ -294,13 +299,14 @@ class ChatService:
             accumulated_characters=len(accumulated),
             total_generated_tokens=total_eval,
         )
+        active_stream = None
         try:
             while continuation_count < max_rounds and total_eval < max_total:
                 continuation_count += 1
                 segment_count += 1
                 segment_limit = min(num_predict, max_total - total_eval)
-                client = OllamaClient(
-                    str(snapshot.get("ollama_host")), selected,
+                client = create_provider(
+                    snapshot, selected,
                     int(snapshot.get("code_request_timeout_seconds" if requested_role == "coder" else "request_timeout_seconds")),
                     True, num_ctx, segment_limit, self._generation_options(snapshot),
                 )
@@ -319,13 +325,16 @@ class ChatService:
                 raw_content = ""
                 latest: dict[str, Any] = {}
                 messages = continuation_messages(base_messages, accumulated, num_ctx=num_ctx)
-                async for chunk in self._stream_model_with_retry(
+                active_stream = self._stream_model_with_retry(
                     client, messages, tools=None if requested_role == "coder" else self._registry.schemas(),
                     hard_deadline=deadline, requested_role=requested_role, resolved_model=selected,
                     conversation_id=conversation_id, assistant_message_id=assistant_id, segment=segment_count,
-                ):
+                )
+                async for chunk in active_stream:
                     latest = chunk
                     raw_content += str((chunk.get("message") or {}).get("content") or "")
+                await active_stream.aclose()
+                active_stream = None
                 merged, overlap = seam_merge(accumulated, raw_content, int(snapshot.get("auto_continue_overlap_window")))
                 accumulated += merged
                 eval_count = int(latest.get("eval_count") or 0)
@@ -390,6 +399,9 @@ class ChatService:
                 conversation_id=conversation_id, assistant_message_id=assistant_id,
                 requested_role=requested_role, resolved_model=selected,
             )
+        finally:
+            if active_stream is not None:
+                await active_stream.aclose()
 
     async def turn(
         self,
@@ -419,7 +431,7 @@ class ChatService:
         installed = {model["name"] for model in catalog.get("models", [])}
         selected = selection.resolved_model
         if selected not in installed:
-            raise ValueError(f"selected {selection.requested_role} model is missing from Ollama: {selected}")
+            raise ValueError(f"selected {selection.requested_role} model is unavailable from inference provider: {selected}")
         self._log_model_role(selection, conversation_id)
 
         user_record = self._conversations.append_message(
@@ -464,8 +476,8 @@ class ChatService:
         num_ctx, num_predict, timeout, max_context_messages = self._generation_limits(
             text, session, coding=selection.requested_role == "coder", snapshot=snapshot
         )
-        client = OllamaClient(
-            str(snapshot.get("ollama_host")),
+        client = create_provider(
+            snapshot,
             selected,
             timeout,
             config.OLLAMA_THINK,
@@ -539,7 +551,7 @@ class ChatService:
         installed = {model["name"] for model in catalog.get("models", [])}
         selected = selection.resolved_model
         if selected not in installed:
-            raise ValueError(f"selected {selection.requested_role} model is missing from Ollama: {selected}")
+            raise ValueError(f"selected {selection.requested_role} model is unavailable from inference provider: {selected}")
         self._log_model_role(selection, conversation_id)
 
         user_record = self._conversations.append_message(
@@ -599,7 +611,6 @@ class ChatService:
             metadata={
                 **selection.metadata(),
                 "status": "generating",
-                "thinking": "",
                 "done_reason": None,
                 "segment_count": 0,
                 "continuation_count": 0,
@@ -610,9 +621,9 @@ class ChatService:
                 "num_ctx": num_ctx,
                 "timeout": False,
                 "timeout_metadata": {
-                    "connect": config.OLLAMA_CONNECT_TIMEOUT_SECONDS,
-                    "first_token": config.OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS,
-                    "stream_idle": config.OLLAMA_STREAM_IDLE_TIMEOUT_SECONDS,
+                    "connect": config.INFERENCE_CONNECT_TIMEOUT_SECONDS,
+                    "first_token": config.INFERENCE_FIRST_TOKEN_TIMEOUT_SECONDS,
+                    "stream_idle": config.INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS,
                     "hard_total": int(snapshot.get("auto_continue_timeout_seconds")),
                 },
                 "incomplete": True,
@@ -632,7 +643,6 @@ class ChatService:
         }
 
         accumulated = ""
-        thinking = ""
         segment_count = 0
         continuation_count = 0
         total_eval = 0
@@ -653,7 +663,6 @@ class ChatService:
             return {
                 **selection.metadata(),
                 "status": status,
-                "thinking": thinking,
                 "done_reason": done_reason,
                 "segment_count": segment_count,
                 "continuation_count": continuation_count,
@@ -664,9 +673,9 @@ class ChatService:
                 "num_ctx": num_ctx,
                 "timeout": status == "failed" and error is not None and "timeout" in error.lower(),
                 "timeout_metadata": {
-                    "connect": config.OLLAMA_CONNECT_TIMEOUT_SECONDS,
-                    "first_token": config.OLLAMA_FIRST_TOKEN_TIMEOUT_SECONDS,
-                    "stream_idle": config.OLLAMA_STREAM_IDLE_TIMEOUT_SECONDS,
+                    "connect": config.INFERENCE_CONNECT_TIMEOUT_SECONDS,
+                    "first_token": config.INFERENCE_FIRST_TOKEN_TIMEOUT_SECONDS,
+                    "stream_idle": config.INFERENCE_STREAM_IDLE_TIMEOUT_SECONDS,
                     "hard_total": int(snapshot.get("auto_continue_timeout_seconds")),
                 },
                 "incomplete": incomplete,
@@ -707,6 +716,7 @@ class ChatService:
             last_checkpoint_at = now_tick
             last_checkpoint_chars = len(accumulated)
 
+        active_stream = None
         try:
             tool_passes = 0
             while True:
@@ -715,8 +725,8 @@ class ChatService:
                     done_reason = "max_total_generation_tokens"
                     break
                 configured_segment_limit = min(num_predict, remaining_budget)
-                client = OllamaClient(
-                    str(snapshot.get("ollama_host")),
+                client = create_provider(
+                    snapshot,
                     selected,
                     _request_timeout,
                     True,
@@ -749,7 +759,7 @@ class ChatService:
                 tool_calls: list[dict[str, Any]] = []
                 fence_filter = PrematureHtmlFenceFilter(accumulated)
 
-                async for chunk in self._stream_model_with_retry(
+                active_stream = self._stream_model_with_retry(
                     client,
                     current_messages,
                     tools=None if selection.requested_role == "coder" else self._registry.schemas(),
@@ -759,12 +769,12 @@ class ChatService:
                     conversation_id=conversation_id,
                     assistant_message_id=assistant_id,
                     segment=segment_count,
-                ):
+                )
+                async for chunk in active_stream:
                     latest = chunk
                     message = chunk.get("message") or {}
                     thinking_delta = message.get("thinking") or ""
                     if thinking_delta:
-                        thinking += thinking_delta
                         yield {"type": "assistant.thinking.delta", "delta": thinking_delta}
                     raw_content_delta = message.get("content") or ""
                     if raw_content_delta:
@@ -804,6 +814,8 @@ class ChatService:
                         }
                     checkpoint("continuing" if is_continuation else "generating")
 
+                await active_stream.aclose()
+                active_stream = None
                 trailing_ticks = fence_filter.flush()
                 if trailing_ticks:
                     if seam_decided:
@@ -1070,15 +1082,6 @@ class ChatService:
                 "error": error,
                 "incomplete": True,
             }
-
-
-
-
-
-
-
-
-
-
-
-
+        finally:
+            if active_stream is not None:
+                await active_stream.aclose()

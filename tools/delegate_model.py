@@ -8,7 +8,7 @@ from typing import Any
 
 from core.errors import SienaToolError
 from core.message import ToolResult
-from core.ollama_client import OllamaClient
+from core.model_provider import ModelProvider
 from tools.base import Tool
 
 
@@ -27,7 +27,7 @@ class DelegateModelTool(Tool):
 
     def __init__(
         self,
-        client_factory: Callable[[str], OllamaClient],
+        client_factory: Callable[[str], ModelProvider],
         assignments: Callable[[], dict[str, str]],
         installed_models: Callable[[], set[str]],
         logger: Any | None = None,
@@ -44,7 +44,7 @@ class DelegateModelTool(Tool):
         if not model:
             raise SienaToolError(f"no model assigned to role {role}")
         if model not in self._installed_models():
-            raise SienaToolError(f"assigned {role} model is missing from Ollama: {model}")
+            raise SienaToolError(f"assigned {role} model is unavailable from inference provider: {model}")
         started = time.monotonic()
         if self._logger is not None:
             self._logger.event("model.request.started", requested_role=role, resolved_model=model, selection_reason="delegate_tool")

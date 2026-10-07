@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.ollama_client import OllamaClient
+from core.model_provider import ModelProvider
 from core.session import Session
 from logging_.logger import SienaLogger
 from tools.registry import ToolRegistry
@@ -67,7 +67,7 @@ def _roles_count(messages: list[dict]) -> dict[str, int]:
 
 def run(
     session: Session,
-    ollama_client: OllamaClient,
+    ollama_client: ModelProvider,
     registry: ToolRegistry,
     logger: SienaLogger,
     max_iterations: int,

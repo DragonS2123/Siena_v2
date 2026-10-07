@@ -8,11 +8,25 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from config import DEFAULT_MODEL_ROLES
+from config import LLAMA_CPP_MODEL, inference_model_roles
 
 PERSISTABLE_FIELDS = {
     "settings_revision",
     "ollama_host",
+    "inference_provider",
+    "provider",  # Accepted input alias; runtime persists the canonical field.
+    "llama_cpp_url",
+    "llama_cpp_model",
+    "llama_cpp_profile",
+    "llama_cpp_managed",
+    "llama_cpp_binary",
+    "llama_cpp_model_path",
+    "llama_cpp_host",
+    "llama_cpp_port",
+    "llama_cpp_device",
+    "llama_cpp_startup_timeout",
+    "llama_cpp_shutdown_timeout",
+    "llama_cpp_reasoning_budget_tokens",
     "model_roles",
     "max_context_messages",
     "num_ctx",
@@ -85,7 +99,7 @@ class SettingsStore:
             return {}
         cleaned = {key: value for key, value in data.items() if key in PERSISTABLE_FIELDS}
         if not isinstance(cleaned.get("model_roles"), dict):
-            roles = dict(DEFAULT_MODEL_ROLES)
+            roles = inference_model_roles(cleaned.get("inference_provider", cleaned.get("provider")), cleaned.get("llama_cpp_model", LLAMA_CPP_MODEL))
             primary = data.get("primary_model")
             coder = data.get("code_model")
             if isinstance(primary, str) and primary.strip():

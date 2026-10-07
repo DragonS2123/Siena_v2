@@ -108,7 +108,8 @@ def test_stream_separates_thinking_and_content_and_persists_final(client, monkey
     assert "".join(event.get("delta", "") for event in events if "content" in event["type"]) == "```html\n<html></html>\n```"
     stored = client.get(f"/api/conversations/{conversation_id}").json()["messages"][-1]
     assert stored["content"] == "```html\n<html></html>\n```"
-    assert stored["metadata"]["thinking"] == "Сначала план."
+    assert "thinking" not in stored["metadata"]
+    assert "Сначала план." not in json.dumps(stored, ensure_ascii=False)
     assert stored["metadata"]["status"] == "completed"
 
 
@@ -196,6 +197,7 @@ def test_provider_error_after_partial_response_is_saved(client, monkeypatch):
     runtime, conversation_id = _prepare(client, monkeypatch)
 
     async def broken(_self, _messages, tools=None, model=None):
+        yield _chunk(thinking="PRIVATE REASONING")
         yield _chunk(content="```html\npartial")
         raise RuntimeError("provider exploded")
 
@@ -209,6 +211,8 @@ def test_provider_error_after_partial_response_is_saved(client, monkeypatch):
     assert stored["content"] == "```html\npartial"
     assert stored["metadata"]["status"] == "failed"
     assert stored["metadata"]["incomplete"] is True
+    assert "thinking" not in stored["metadata"]
+    assert "PRIVATE REASONING" not in json.dumps(stored)
 
 
 def test_stream_idle_timeout_is_distinct():
@@ -258,6 +262,7 @@ def test_client_disconnect_cancels_provider_and_preserves_partial(client, monkey
     runtime, conversation_id = _prepare(client, monkeypatch)
 
     async def endless(_self, _messages, tools=None, model=None):
+        yield _chunk(thinking="PRIVATE CANCELLED REASONING")
         yield _chunk(content="```html\npartial")
         await asyncio.sleep(60)
 
@@ -266,6 +271,7 @@ def test_client_disconnect_cancels_provider_and_preserves_partial(client, monkey
     async def run():
         stream = runtime.chat.stream_turn(conversation_id, "Создай HTML код")
         assert (await anext(stream))["type"] == "generation.started"
+        assert (await anext(stream))["type"] == "assistant.thinking.delta"
         assert (await anext(stream))["type"] == "assistant.content.delta"
         await stream.aclose()
 
@@ -274,6 +280,8 @@ def test_client_disconnect_cancels_provider_and_preserves_partial(client, monkey
     assert stored["content"] == "```html\npartial"
     assert stored["metadata"]["status"] == "cancelled"
     assert stored["metadata"]["incomplete"] is True
+    assert "thinking" not in stored["metadata"]
+    assert "PRIVATE CANCELLED REASONING" not in json.dumps(stored)
 
 
 def test_active_chunks_keep_stream_alive_beyond_single_request_threshold():
