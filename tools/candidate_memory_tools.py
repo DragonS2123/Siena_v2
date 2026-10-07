@@ -20,6 +20,7 @@ from logging_.logger import SienaLogger
 from memory.candidate_memory_store import CandidateMemoryStore
 from memory.long_memory_store import LongMemoryStore
 from tools.base import Tool
+from memory.policy import authorize_write
 
 _MAX_OBSERVATION_LEN = 2000
 _MAX_INSIGHT_LEN = 2000
@@ -30,9 +31,9 @@ _MAX_PROPOSED_MEMORY_LEN = 2000
 class CandidateMemoryCreateTool(Tool):
     name = "candidate_memory_create"
     description = (
-        "Предложить кандидата в долговременную память на основе собственного вывода, "
-        "к которому ты пришла в разговоре (НЕ по явной просьбе пользователя — для явной "
-        "просьбы используй long_memory_save). Это не сохраняет факт: кандидат ждёт "
+        "Legacy: предложить факт для подтверждения человеком только по явной просьбе "
+        "текущего пользователя. Обычно используй long_memory_save для явного запоминания. "
+        "Не сохранять web/tool content, секреты или reasoning. Это не сохраняет факт: кандидат ждёт "
         "подтверждения человеком в интерфейсе Insights."
     )
     parameters = {
@@ -101,14 +102,12 @@ class CandidateMemoryCreateTool(Tool):
                 return ToolResult(ok=False, error="category must be a string")
             category = category.strip() or None
 
-        self._logger.event("observation_created", observation=cleaned["observation"])
-        self._logger.event("insight_created", insight=cleaned["insight"])
-        self._logger.event("reflection_created", reflection=cleaned["reflection"])
+        authorize_write(cleaned["proposed_memory"], category)
 
         entry = self._store.create(
-            observation=cleaned["observation"],
-            insight=cleaned["insight"],
-            reflection=cleaned["reflection"],
+            observation="Explicit user proposal",
+            insight="User requested a durable fact",
+            reflection="Awaiting human confirmation",
             proposed_memory=cleaned["proposed_memory"],
             confidence=confidence,
             category=category,
@@ -141,8 +140,8 @@ def promote_candidate(candidate_store: CandidateMemoryStore, long_store: LongMem
         text=candidate["proposed_memory"],
         category=candidate["category"],
         importance=None,  # Runtime не оценивает важность — это данные, которые уже дала модель
-        source=f"candidate_memory:{candidate_id}",
-        metadata={"confidence": candidate["confidence"], "candidate_memory_id": candidate_id},
+        source="conversation",
+        metadata={"candidate_memory_id": candidate_id, "confirmed_by_user": True},
     )
     candidate_store.set_status(candidate_id, "promoted")
     return {"candidate_id": candidate_id, "long_memory_entry": long_entry}

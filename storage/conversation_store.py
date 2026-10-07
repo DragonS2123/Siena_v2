@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from core.errors import SienaInfraError
+from memory.policy import history_content, history_metadata
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -337,6 +338,7 @@ class ConversationStore:
                 current_metadata = json.loads(row["metadata_json"] or "{}")
                 if metadata is not None:
                     current_metadata.update(metadata)
+                current_metadata = history_metadata(current_metadata)
                 conn.execute(
                     """
                     UPDATE conversation_messages
@@ -344,7 +346,7 @@ class ConversationStore:
                     WHERE id = ?
                     """,
                     (
-                        row["content"] if content is None else content,
+                        history_content(row["content"] if content is None else content, assistant=True),
                         row["model"] if model is None else model,
                         json.dumps(current_metadata, ensure_ascii=False),
                         message_id,
@@ -405,7 +407,7 @@ class ConversationStore:
             raise SienaInfraError(f"Interrupted message recovery failed: {exc}") from exc
         return recovered
     def update_message_metadata(self, message_id: str, metadata: dict[str, Any]) -> None:
-        metadata_json = json.dumps(metadata, ensure_ascii=False)
+        metadata_json = json.dumps(history_metadata(metadata), ensure_ascii=False)
         try:
             with self._connect() as conn:
                 conn.execute(
@@ -426,6 +428,7 @@ class ConversationStore:
                     raise KeyError(message_id)
                 metadata = json.loads(row["metadata_json"] or "{}")
                 metadata.update(patch)
+                metadata = history_metadata(metadata)
                 conn.execute(
                     "UPDATE conversation_messages SET metadata_json = ? WHERE id = ?",
                     (json.dumps(metadata, ensure_ascii=False), message_id),
@@ -498,6 +501,8 @@ class ConversationStore:
     ) -> dict[str, Any]:
         message_id = str(uuid.uuid4())
         now = _now_iso()
+        content = history_content(content, assistant=role == 'assistant')
+        metadata = history_metadata(metadata or {})
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
 
         try:
@@ -540,7 +545,7 @@ class ConversationStore:
     def append_event(self, conversation_id: str, event_type: str, payload: dict[str, Any]) -> None:
         event_id = str(uuid.uuid4())
         now = _now_iso()
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        payload_json = json.dumps(history_metadata(payload), ensure_ascii=False)
         try:
             with self._connect() as conn:
                 conn.execute(

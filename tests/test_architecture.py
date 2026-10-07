@@ -22,7 +22,7 @@ def test_routes_and_registry_are_core_only(client):
     assert client.get("/api/tools").json()["tools"]
     assert [item["name"] for item in client.get("/api/tools").json()["tools"]] == [
         "short_memory_save", "short_memory_search", "short_memory_clear",
-        "long_memory_save", "long_memory_search", "long_memory_list",
+        "long_memory_save", "long_memory_search", "long_memory_list", "long_memory_deactivate",
         "candidate_memory_create", "delegate_model", "web_search", "web_read",
     ]
 

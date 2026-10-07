@@ -12,12 +12,12 @@ from memory.candidate_memory_store import CandidateMemoryStore
 from memory.embedding_service import EmbeddingService
 from memory.long_memory_store import LongMemoryStore
 from memory.short_memory_store import ShortMemoryStore
-from memory.vector_store import VectorStore
 from tools.candidate_memory_tools import CandidateMemoryCreateTool
 from tools.delegate_model import DelegateModelTool
 from tools.memory_tools import (
     LongMemoryListTool,
     LongMemorySaveTool,
+    LongMemoryDeactivateTool,
     LongMemorySearchTool,
     ShortMemoryClearTool,
     ShortMemorySaveTool,
@@ -33,6 +33,7 @@ TOOL_NAMES = (
     "long_memory_save",
     "long_memory_search",
     "long_memory_list",
+    "long_memory_deactivate",
     "candidate_memory_create",
     "delegate_model",
     "web_search",
@@ -51,17 +52,15 @@ def build_tool_registry(
         lambda: assignments()["embedding"],
         logger,
     )
-    vectors = VectorStore(config.MEMORY_VECTORS_DB_PATH)
     short = ShortMemoryStore(
         config.SHORT_MEMORY_PATH,
-        embedding_service=embedding,
-        embedding_min_score=config.EMBEDDING_MIN_SCORE,
+        embedding_service=None,
         logger=logger,
     )
     long = LongMemoryStore(
         config.LONG_MEMORY_DB_PATH,
         embedding_service=embedding,
-        vector_store=vectors,
+        vector_store=None,
         embedding_min_score=config.EMBEDDING_MIN_SCORE,
         logger=logger,
     )
@@ -85,6 +84,7 @@ def build_tool_registry(
         LongMemorySaveTool(long, logger),
         LongMemorySearchTool(long, logger),
         LongMemoryListTool(long, logger),
+        LongMemoryDeactivateTool(long, logger),
         CandidateMemoryCreateTool(candidates, logger),
         DelegateModelTool(delegate_client, assignments, installed_models, logger),
         WebSearchTool(),

@@ -12,6 +12,9 @@ class Session:
     def __init__(self, system_prompt: str):
         self.messages: list[dict] = [system_message(system_prompt)]
         self.web_sources: list[dict] = []
+        self.memory_user_text = ""
+        self.conversation_id = None
+        self.user_message_id = None
 
     def add_user(self, content: str) -> None:
         self.messages.append(user_message(content))

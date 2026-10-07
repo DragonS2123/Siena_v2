@@ -1,47 +1,27 @@
-"""Surface confirmed high-importance facts in each local chat turn.
-
-The model can still search memory for facts outside this compact context.
-Only facts previously marked important are included.
-"""
-
+"""Bounded relevant facts for this user query, never the full memory store."""
 from __future__ import annotations
 
+import json
 from typing import Any
-
 from memory.long_memory_store import LongMemoryStore
-
-MAX_FACTS = 8
-MAX_FACT_CHARS = 200
+from memory.policy import MAX_FACTS, RETRIEVAL_CHARS
 
 
-def build_user_memory_context(long_store: LongMemoryStore, *, limit: int = MAX_FACTS) -> str:
-    """Returns a compact [USER_MEMORY_CONTEXT] block, or "" if there are no
-    high-importance facts yet (or on any storage failure — this must never
-    crash or block a chat turn; see the try/except below)."""
+def build_user_memory_context(long_store: LongMemoryStore, query: str = '', *, limit: int = MAX_FACTS,
+                              max_chars: int = RETRIEVAL_CHARS) -> str:
     try:
-        facts = long_store.list_high_importance(limit=limit)
+        facts = long_store.search(query, limit=min(limit, MAX_FACTS))
+        selected = []
+        for fact in facts:
+            row = {key: fact[key] for key in ('id', 'text', 'source')}
+            encoded = json.dumps({'memory_v1': selected + [row]}, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e')
+            if len(encoded) <= min(max_chars, RETRIEVAL_CHARS):
+                selected.append(row)
+        return json.dumps({'memory_v1': selected}, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e') if selected else ''
     except Exception:
-        return ""
-    if not facts:
-        return ""
-
-    lines = ["[USER_MEMORY_CONTEXT]", "Подтверждённые важные факты о пользователе (используй, если уместно):"]
-    for fact in facts:
-        text = (fact.get("text") or "").strip()
-        if not text:
-            continue
-        if len(text) > MAX_FACT_CHARS:
-            text = text[:MAX_FACT_CHARS] + "…"
-        lines.append(f"- {text}")
-    lines.append("[/USER_MEMORY_CONTEXT]")
-    return "\n".join(lines) if len(lines) > 3 else ""
+        return ''  # Memory retrieval must not prevent an otherwise healthy chat.
 
 
 def memory_context_event_fields(context: str, requested_limit: int = MAX_FACTS) -> dict[str, Any]:
-    """Safe diagnostic fields for memory_context_injected/empty trace events
-    — count only, never fact content (see module docstring)."""
-    if not context:
-        return {"count": 0}
-    # Each fact is one "- " line between the two bracket lines.
-    fact_lines = [line for line in context.splitlines() if line.startswith("- ")]
-    return {"count": len(fact_lines), "limit": requested_limit}
+    return {'count': len(json.loads(context)['memory_v1']) if context else 0,
+            'characters': len(context), 'limit': min(requested_limit, MAX_FACTS), 'character_budget': RETRIEVAL_CHARS}

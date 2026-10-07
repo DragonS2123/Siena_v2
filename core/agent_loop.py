@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from core.model_provider import ModelProvider
 from core.session import Session
+from memory.policy import memory_turn
 from logging_.logger import SienaLogger
 from tools.registry import ToolRegistry
 from uuid import uuid4
@@ -179,7 +180,8 @@ def run(
                 name=name,
                 tool_call_id=tool_call_id,
                 argument_names=sorted(args),
-                console_message=f"  -> tool_call: {name}({args})",
+                console_message=(f"  -> tool_call: {name}" if name and 'memory' in name
+                                 else f"  -> tool_call: {name}({args})"),
             )
 
             if signature in seen_tool_calls:
@@ -187,7 +189,8 @@ def run(
                 result = ToolResult(ok=False, error="duplicate_tool_call_blocked")
             else:
                 seen_tool_calls.add(signature)
-                result = registry.dispatch(name, args, tool_call_id=tool_call_id)
+                with memory_turn(session.memory_user_text, session.conversation_id, session.user_message_id):
+                    result = registry.dispatch(name, args, tool_call_id=tool_call_id)
 
             logger.event(
                 "tool_result",

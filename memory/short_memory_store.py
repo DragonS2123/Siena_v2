@@ -24,6 +24,7 @@ from typing import Any
 from core.errors import SienaInfraError
 from memory import search as keyword_search
 from memory.embedding_service import EmbeddingService
+from memory.policy import validate_fact
 
 
 class ShortMemoryStore:
@@ -60,20 +61,22 @@ class ShortMemoryStore:
         except OSError as exc:
             raise SienaInfraError(f"Не удалось записать short_memory.json: {exc}") from exc
 
-    def save(self, text: str) -> dict:
+    def save(self, text: str, *, conversation_id: str | None = None) -> dict:
+        text = validate_fact(text)
         entries = self._read()
         entry = {
             "id": str(uuid.uuid4()),
             "created_at": datetime.now().astimezone().isoformat(),
             "text": text,
-            "source": "model_tool_call",
+            "source": "user",
+            "conversation_id": conversation_id,
         }
         entries.append(entry)
         self._write(entries)
         return entry
 
-    def search(self, query: str) -> list[dict]:
-        entries = self._read()
+    def search(self, query: str, *, conversation_id: str | None = None) -> list[dict]:
+        entries = [e for e in self._read() if e.get("conversation_id") == conversation_id]
         if not query.strip():
             return entries
 
@@ -133,7 +136,8 @@ class ShortMemoryStore:
                 )
             return []
 
-    def clear(self) -> int:
+    def clear(self, *, conversation_id: str | None = None) -> int:
         entries = self._read()
-        self._write([])
-        return len(entries)
+        remaining = [e for e in entries if e.get("conversation_id") != conversation_id] if conversation_id is not None else []
+        self._write(remaining)
+        return len(entries) - len(remaining)

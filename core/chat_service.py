@@ -25,7 +25,8 @@ from core.streaming_chat import (
     seam_merge,
     with_stream_timeouts,
 )
-from memory.user_memory_context import build_user_memory_context
+from memory.user_memory_context import build_user_memory_context, memory_context_event_fields
+from memory.policy import recent_messages, memory_turn
 from storage.conversation_store import ConversationStore
 from core.runtime_settings import RuntimeSettingsService, RuntimeSettingsSnapshot
 from tools.registry import ToolRegistry
@@ -51,6 +52,12 @@ class ChatService:
         self._attachments = attachments
         self._logger = logger
         self._settings = settings
+
+    def _memory_context(self, text: str, conversation_id: str) -> str:
+        context = build_user_memory_context(self._long_memory, text)
+        self._logger.event('memory_context', conversation_id=conversation_id,
+                           **memory_context_event_fields(context))
+        return context
 
     @staticmethod
     def _is_code_request(text: str, attachments: list[dict[str, Any]] | None = None) -> bool:
@@ -278,6 +285,10 @@ class ChatService:
                 base_messages.append({"role": "user", "content": content})
             elif role == "assistant":
                 base_messages.append({"role": "assistant", "content": content})
+        base_messages = base_messages[:1] + recent_messages(base_messages[1:])
+        memory_context = self._memory_context(user_request, conversation_id)
+        if memory_context:
+            base_messages.append({"role": "user", "content": memory_context})
         num_ctx = int(snapshot.get("context_size"))
         num_predict = int(snapshot.get("code_output_tokens" if requested_role == "coder" else "chat_output_tokens"))
         max_rounds = int(snapshot.get("auto_continue_max_rounds"))
@@ -455,7 +466,10 @@ class ChatService:
             )
             raise
         session = Session(config.SYSTEM_PROMPT)
-        for message in conversation["messages"]:
+        session.memory_user_text = text
+        session.conversation_id = conversation_id
+        session.user_message_id = user_record["id"]
+        for message in recent_messages(conversation["messages"]):
             role = message.get("role")
             content = message.get("content") or ""
             if role == "user":
@@ -466,7 +480,7 @@ class ChatService:
         now = datetime.now().astimezone()
         context = [
             f"[RUNTIME]\ndate={now:%Y-%m-%d}\ntime={now:%H:%M:%S}\ntimezone={now.tzname()}\n[/RUNTIME]",
-            build_user_memory_context(self._long_memory),
+            self._memory_context(text, conversation_id),
             attachment_context,
             ocr_context,
             vision_context,
@@ -574,7 +588,10 @@ class ChatService:
             raise
 
         session = Session(config.SYSTEM_PROMPT)
-        for message in conversation["messages"]:
+        session.memory_user_text = text
+        session.conversation_id = conversation_id
+        session.user_message_id = user_record["id"]
+        for message in recent_messages(conversation["messages"]):
             role = message.get("role")
             content = message.get("content") or ""
             if role == "user":
@@ -584,7 +601,7 @@ class ChatService:
         now = datetime.now().astimezone()
         runtime_context = [
             f"[RUNTIME]\ndate={now:%Y-%m-%d}\ntime={now:%H:%M:%S}\ntimezone={now.tzname()}\n[/RUNTIME]",
-            build_user_memory_context(self._long_memory),
+            self._memory_context(text, conversation_id),
             attachment_context,
             ocr_context,
             vision_context,
@@ -917,7 +934,8 @@ class ChatService:
                         args = function.get("arguments") or {}
                         self._logger.event('tool_dispatch', name=name, tool_call_id=call.get('id'),
                                            argument_names=sorted(args), conversation_id=conversation_id)
-                        result = await self._registry.dispatch_async(name, args, tool_call_id=call.get("id"))
+                        with memory_turn(text, conversation_id, user_record["id"]):
+                            result = await self._registry.dispatch_async(name, args, tool_call_id=call.get("id"))
                         self._logger.event('tool_result', name=name, tool_call_id=call.get('id'),
                                            ok=result.ok, error=result.error, conversation_id=conversation_id)
                         session.add_tool_result(name, result, args, tool_call_id=call.get("id"))
